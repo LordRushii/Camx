@@ -1,7 +1,8 @@
-import { Geist, Geist_Mono, Roboto, Montserrat } from "next/font/google"
+import { Geist_Mono, Roboto, Montserrat } from "next/font/google"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
+import { AppShell } from "@/components/shell"
 import { cn } from "@/lib/utils";
 
 const montserratHeading = Montserrat({subsets:['latin'],variable:'--font-heading'});
@@ -25,7 +26,9 @@ export default function RootLayout({
       className={cn("antialiased", fontMono.variable, "font-sans", roboto.variable, montserratHeading.variable)}
     >
       <body>
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <AppShell>{children}</AppShell>
+        </ThemeProvider>
       </body>
     </html>
   )
