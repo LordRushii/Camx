@@ -146,7 +146,7 @@ export default function LiveMonitorPage() {
 
                 {/* Canvas Overlay for detections */}
                 {isFeedActive && isDetectActive && (
-                  <CameraOverlay detections={detections} width={640} height={480} />
+                  <CameraOverlay cameraId={selectedCam} isDetectActive={isDetectActive} model={model} width={640} height={480} />
                 )}
               </div>
             </CardContent>

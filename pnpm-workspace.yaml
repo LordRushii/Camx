@@ -1,6 +1,10 @@
-packages: []
+packages:
+  - "."
+  - "apps/*"
 
 allowBuilds:
   sharp: true
   unrs-resolver: true
   msw: false
+  onnxruntime-node: true
+  esbuild: true

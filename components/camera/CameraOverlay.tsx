@@ -1,22 +1,53 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-
-export interface Detection {
-  readonly bbox: [number, number, number, number]; // [x1, y1, x2, y2]
-  readonly class: string;
-  readonly confidence: number;
-  readonly mask?: readonly (readonly [number, number])[];
-}
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { drawDetections, type DetectionModel } from "@/lib/draw";
 
 interface CameraOverlayProps {
-  readonly detections: readonly Detection[];
+  readonly cameraId: string;
+  readonly isDetectActive: boolean;
+  readonly model: DetectionModel;
   readonly width?: number;
   readonly height?: number;
 }
 
-export function CameraOverlay({ detections, width = 640, height = 480 }: CameraOverlayProps) {
+export function CameraOverlay({
+  cameraId,
+  isDetectActive,
+  model,
+  width = 640,
+  height = 480,
+}: CameraOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Set up local 'since' timestamp to query recent detections
+  // Round to nearest 5s to leverage Convex query caching
+  const [since, setSince] = useState(() => Date.now() - 5000);
+
+  useEffect(() => {
+    if (!isDetectActive) return;
+    const interval = setInterval(() => {
+      setSince(Math.floor((Date.now() - 5000) / 5000) * 5000);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [isDetectActive]);
+
+  // Subscribe to detections push logs in Convex
+  const rawDetections = useQuery(
+    api.detections.recentByCamera,
+    isDetectActive ? { cameraId, since } : "skip"
+  );
+
+  const latestDoc =
+    rawDetections && rawDetections.length > 0
+      ? rawDetections[rawDetections.length - 1]
+      : null;
+
+  const detections = latestDoc ? latestDoc.detections : [];
+  const frameW = latestDoc?.frame?.width ?? width;
+  const frameH = latestDoc?.frame?.height ?? height;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -29,66 +60,18 @@ export function CameraOverlay({ detections, width = 640, height = 480 }: CameraO
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Clear previous drawing
-    ctx.clearRect(0, 0, width, height);
-
-    if (detections.length === 0) return;
-
-    // Iterate and draw each detection
-    for (const d of detections) {
-      const [x1, y1, x2, y2] = d.bbox;
-      const w = x2 - x1;
-      const h = y2 - y1;
-
-      // Determine color theme based on object class
-      const isThreat = ["weapon", "knife", "handgun", "rifle"].includes(d.class.toLowerCase());
-      const isWarning = ["backpack", "cell phone"].includes(d.class.toLowerCase());
-
-      const color = isThreat ? "#ef4444" : isWarning ? "#f59e0b" : "#22c55e";
-      const fillStyle = isThreat ? "rgba(239, 68, 68, 0.15)" : isWarning ? "rgba(245, 158, 11, 0.1)" : "rgba(34, 197, 94, 0.1)";
-
-      // 1. Draw segmentation mask if present
-      if (d.mask && d.mask.length > 0) {
-        ctx.beginPath();
-        const startPoint = d.mask[0];
-        if (startPoint) {
-          ctx.moveTo(startPoint[0], startPoint[1]);
-          for (let i = 1; i < d.mask.length; i++) {
-            const point = d.mask[i];
-            if (point) ctx.lineTo(point[0], point[1]);
-          }
-          ctx.closePath();
-          ctx.fillStyle = fillStyle;
-          ctx.fill();
-          ctx.lineWidth = 1.5;
-          ctx.strokeStyle = color;
-          ctx.stroke();
-        }
-      }
-
-      // 2. Draw bounding box
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x1, y1, w, h);
-
-      // 3. Draw background overlay for box (only if no mask was filled)
-      if (!d.mask) {
-        ctx.fillStyle = fillStyle;
-        ctx.fillRect(x1, y1, w, h);
-      }
-
-      // 4. Draw label tag
-      const text = `${d.class.toUpperCase()} ${(d.confidence * 100).toFixed(0)}%`;
-      ctx.font = "bold 10px monospace";
-      const textWidth = ctx.measureText(text).width;
-
-      ctx.fillStyle = color;
-      ctx.fillRect(x1 - 1, y1 - 16, textWidth + 12, 16);
-
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(text, x1 + 5, y1 - 4);
+    if (!isDetectActive || detections.length === 0) {
+      ctx.clearRect(0, 0, width, height);
+      return;
     }
-  }, [detections, width, height]);
+
+    // Draw bounding boxes and segmentation masks
+    drawDetections(ctx, detections, {
+      frameW,
+      frameH,
+      model,
+    });
+  }, [detections, frameW, frameH, model, width, height, isDetectActive]);
 
   return (
     <canvas
@@ -97,3 +80,4 @@ export function CameraOverlay({ detections, width = 640, height = 480 }: CameraO
     />
   );
 }
+

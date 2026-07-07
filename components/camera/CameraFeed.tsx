@@ -6,10 +6,12 @@ interface CameraFeedProps {
   readonly isCameraActive: boolean;
   readonly label: string;
   readonly deviceId?: string | null;
+  readonly videoRef?: React.RefObject<HTMLVideoElement | null>;
 }
 
-export function CameraFeed({ isCameraActive, label, deviceId }: CameraFeedProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+export function CameraFeed({ isCameraActive, label, deviceId, videoRef: passedVideoRef }: CameraFeedProps) {
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const videoRef = passedVideoRef ?? localVideoRef;
   const [error, setError] = useState<string | null>(null);
 
   const activeStreamRef = useRef<MediaStream | null>(null);
