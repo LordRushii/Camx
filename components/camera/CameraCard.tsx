@@ -9,15 +9,42 @@ import { useCameraDevices } from "@/hooks/useCameraDevices";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Detection } from "@/lib/draw";
 import { cocoClassName } from "@/lib/coco";
+import { Button } from "@/components/ui/button";
+import { Trash2 } from "lucide-react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { Id } from "@/convex/_generated/dataModel";
 
 interface CameraCardProps {
   readonly cameraIndex: number;
   readonly label: string;
   readonly onHarmDetected?: (result: { readonly isHarm: boolean; readonly description: string }, cameraLabel: string) => void;
+  readonly cameraId?: string;
+  readonly dbId?: Id<"cameras">;
+  readonly sourceType?: "device" | "network";
+  readonly sourceKey?: string;
+  readonly enabled?: boolean;
 }
 
-export function CameraCard({ cameraIndex, label }: CameraCardProps) {
-  const [isActive, setIsActive] = useState(true);
+export function CameraCard({
+  cameraIndex,
+  label,
+  onHarmDetected: _onHarmDetected,
+  cameraId,
+  dbId,
+  sourceType,
+  sourceKey,
+  enabled,
+}: CameraCardProps) {
+  const deleteCamera = useMutation(api.cameras.remove);
+  const [isActive, setIsActive] = useState(enabled ?? true);
+
+  // Sync active state when database enabled field changes
+  useEffect(() => {
+    if (enabled !== undefined) {
+      setTimeout(() => setIsActive(enabled), 0);
+    }
+  }, [enabled]);
   const [isDetectActive, setIsDetectActive] = useState(true);
   const [isWatchActive, setIsWatchActive] = useState(false);
   const [model, setModel] = useState<"rfdetr" | "yolo">("rfdetr");
@@ -32,15 +59,23 @@ export function CameraCard({ cameraIndex, label }: CameraCardProps) {
   const { devices, isLoading } = useCameraDevices();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("none");
 
-  // Auto-select first device only for index 0 (webcam 1), others default to none
+  // Auto-select device based on sourceKey or cameraIndex
   useEffect(() => {
-    if (devices.length > 0 && selectedDeviceId === "none" && cameraIndex === 0) {
-      const dev = devices[0];
-      if (dev) {
-        setTimeout(() => setSelectedDeviceId(dev.deviceId), 0);
+    if (devices.length > 0 && selectedDeviceId === "none") {
+      if (sourceType === "device") {
+        const deviceIdx = parseInt(sourceKey || "0", 10);
+        const dev = devices[deviceIdx] || devices[0];
+        if (dev) {
+          setTimeout(() => setSelectedDeviceId(dev.deviceId), 0);
+        }
+      } else if (cameraIndex === 0) {
+        const dev = devices[0];
+        if (dev) {
+          setTimeout(() => setSelectedDeviceId(dev.deviceId), 0);
+        }
       }
     }
-  }, [devices, cameraIndex, selectedDeviceId]);
+  }, [devices, cameraIndex, selectedDeviceId, sourceType, sourceKey]);
 
 
 
@@ -79,7 +114,7 @@ export function CameraCard({ cameraIndex, label }: CameraCardProps) {
         setIsProcessing(true);
         const formData = new FormData();
         formData.append("frame", blob, `frame-${cameraIndex}.jpg`);
-        formData.append("cameraId", `camera-${cameraIndex}`);
+        formData.append("cameraId", cameraId || `camera-${cameraIndex}`);
         formData.append("model", model);
 
         const response = await fetch("http://localhost:3001/detect", {
@@ -117,7 +152,7 @@ export function CameraCard({ cameraIndex, label }: CameraCardProps) {
       if (timeoutId) clearTimeout(timeoutId);
       if (abortController) abortController.abort();
     };
-  }, [isActive, isDetectActive, cameraIndex, model]);
+  }, [isActive, isDetectActive, cameraIndex, model, cameraId]);
 
   // Determine status color based on detections
   const hasThreat = detections.some((d) => {
@@ -144,10 +179,31 @@ export function CameraCard({ cameraIndex, label }: CameraCardProps) {
           <div className="space-y-1">
             <CardTitle className="text-sm font-semibold">{label}</CardTitle>
             <div className="text-[10px] text-muted-foreground uppercase font-mono tracking-wider">
-              Index: {cameraIndex}
+              {cameraId ? `ID: ${cameraId}` : `Index: ${cameraIndex}`}
             </div>
           </div>
-          <CameraStatusBadge status={status} />
+          <div className="flex items-center gap-2">
+            <CameraStatusBadge status={status} />
+            {dbId && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={async () => {
+                  if (confirm(`Are you sure you want to delete camera "${label}"?`)) {
+                    try {
+                      await deleteCamera({ id: dbId });
+                    } catch (err) {
+                      console.error("Failed to delete camera:", err);
+                    }
+                  }
+                }}
+                className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                title="Delete Camera"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Camera Selector Dropdown */}
@@ -181,7 +237,7 @@ export function CameraCard({ cameraIndex, label }: CameraCardProps) {
       <CardContent className="p-0 border-t border-border flex flex-col items-center bg-black relative aspect-[4/3] overflow-hidden">
         <CameraFeed isCameraActive={isActive} label={label} deviceId={selectedDeviceId} videoRef={videoRef} />
         {isActive && isDetectActive && (
-          <CameraOverlay cameraId={`camera-${cameraIndex}`} isDetectActive={isDetectActive} model={model} width={640} height={480} />
+          <CameraOverlay cameraId={cameraId || `camera-${cameraIndex}`} isDetectActive={isDetectActive} model={model} width={640} height={480} />
         )}
       </CardContent>
 

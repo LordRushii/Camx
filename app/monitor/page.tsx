@@ -5,6 +5,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CameraFeed, CameraOverlay, CameraStatusBadge, CameraControls, CameraDebugPanel } from "@/components/camera";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { useCameraDevices } from "@/hooks/useCameraDevices";
+import { Button } from "@/components/ui/button";
+import { Trash2, Camera } from "lucide-react";
 
 interface LiveAlert {
   id: string;
@@ -21,7 +26,23 @@ interface MockDetection {
 }
 
 export default function LiveMonitorPage() {
-  const [selectedCam, setSelectedCam] = useState("camera-1");
+  const cameras = useQuery(api.cameras.list);
+  const deleteCamera = useMutation(api.cameras.remove);
+  const { devices } = useCameraDevices();
+  const [selectedCam, setSelectedCam] = useState<string | null>(null);
+
+  // Synchronize selected camera selection
+  useEffect(() => {
+    if (!cameras) return;
+    if (cameras.length > 0) {
+      const exists = cameras.some((c) => c.cameraId === selectedCam);
+      if (!exists || !selectedCam) {
+        setTimeout(() => setSelectedCam(cameras[0].cameraId), 0);
+      }
+    } else if (selectedCam !== null) {
+      setTimeout(() => setSelectedCam(null), 0);
+    }
+  }, [cameras, selectedCam]);
   const [alerts, setAlerts] = useState<LiveAlert[]>([
     { id: "a1", time: "22:45:12", camera: "Camera 1", message: "Knife threat unverified", type: "warning" },
     { id: "a2", time: "22:45:13", camera: "Camera 1", message: "VLM verification process initiated", type: "nominal" },
@@ -129,26 +150,95 @@ export default function LiveMonitorPage() {
                 <CardTitle className="text-base font-semibold">Primary Feed Monitor</CardTitle>
                 <CardDescription>Targeting main terminal gateway entrance.</CardDescription>
               </div>
-              <Select value={selectedCam} onValueChange={(val) => { if (val) setSelectedCam(val); }}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Select camera" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="camera-1">Camera 1 (Front Entrance)</SelectItem>
-                  <SelectItem value="camera-2">Camera 2 (Loading Dock)</SelectItem>
-                </SelectContent>
-              </Select>
-            </CardHeader>
-            <CardContent className="p-0 border-t border-border flex flex-col items-center bg-black relative">
-              <div className="w-full max-w-[640px] aspect-[4/3] relative overflow-hidden my-6 border border-border/20 rounded-md">
-                {/* Camera Feed component */}
-                <CameraFeed isCameraActive={isFeedActive} label="Live Entrance Feed" />
+              <div className="flex items-center gap-2">
+                <Select
+                  value={selectedCam || ""}
+                  onValueChange={(val) => {
+                    if (val) setSelectedCam(val);
+                  }}
+                >
+                  <SelectTrigger className="w-[180px] text-xs font-semibold">
+                    <SelectValue placeholder="Select camera" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {cameras === undefined ? (
+                      <SelectItem value="loading">Loading cameras...</SelectItem>
+                    ) : cameras.length === 0 ? (
+                      <SelectItem value="none">No cameras registered</SelectItem>
+                    ) : (
+                      cameras.map((camera) => (
+                        <SelectItem key={camera._id} value={camera.cameraId} className="text-xs font-semibold">
+                          {camera.name}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
 
-                {/* Canvas Overlay for detections */}
-                {isFeedActive && isDetectActive && (
-                  <CameraOverlay cameraId={selectedCam} isDetectActive={isDetectActive} model={model} width={640} height={480} />
+                {/* Delete selected camera button */}
+                {selectedCam && selectedCam !== "loading" && selectedCam !== "none" && (
+                  (() => {
+                    const currentCam = cameras?.find((c) => c.cameraId === selectedCam);
+                    if (!currentCam) return null;
+                    return (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={async () => {
+                          if (confirm(`Are you sure you want to delete camera "${currentCam.name}"?`)) {
+                            try {
+                              await deleteCamera({ id: currentCam._id });
+                              setSelectedCam(null); // Clear selection so useEffect auto-selects next one
+                            } catch (err) {
+                              console.error("Failed to delete camera:", err);
+                            }
+                          }
+                        }}
+                        className="h-9 w-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer border border-border/40"
+                        title="Delete Selected Camera"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    );
+                  })()
                 )}
               </div>
+            </CardHeader>
+            <CardContent className="p-0 border-t border-border flex flex-col items-center bg-black relative">
+              {selectedCam ? (
+                (() => {
+                  const currentCam = cameras?.find((c) => c.cameraId === selectedCam);
+                  const sourceType = currentCam?.sourceType;
+                  const sourceKey = currentCam?.sourceKey;
+
+                  let deviceId: string | undefined = undefined;
+                  if (sourceType === "device" && devices && devices.length > 0) {
+                    const deviceIndex = parseInt(sourceKey || "0", 10);
+                    const dev = devices[deviceIndex] || devices[0];
+                    deviceId = dev?.deviceId;
+                  }
+
+                  return (
+                    <div className="w-full max-w-[640px] aspect-[4/3] relative overflow-hidden my-6 border border-border/20 rounded-md">
+                      {/* Camera Feed component */}
+                      <CameraFeed isCameraActive={isFeedActive} label={currentCam?.name || "Live Entrance Feed"} deviceId={deviceId} />
+
+                      {/* Canvas Overlay for detections */}
+                      {isFeedActive && isDetectActive && (
+                        <CameraOverlay cameraId={selectedCam} isDetectActive={isDetectActive} model={model} width={640} height={480} />
+                      )}
+                    </div>
+                  );
+                })()
+              ) : (
+                <div className="flex flex-col items-center justify-center aspect-[4/3] w-full max-w-[640px] my-6 border border-dashed border-border/40 rounded-md bg-muted/5 p-6 text-center">
+                  <Camera className="w-8 h-8 text-muted-foreground/50 mb-3" />
+                  <p className="text-sm font-semibold text-muted-foreground">No active feed</p>
+                  <p className="text-xs text-muted-foreground font-light mt-1">
+                    Select a camera from the dropdown above, or register a new input device in settings.
+                  </p>
+                </div>
+              )}
             </CardContent>
             <CardFooter className="flex flex-col gap-4 p-6 bg-muted/10 border-t border-border">
               <CameraControls

@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 
 export function DetectView() {
   const latestActiveThreat = useQuery(api.threatLogs.latestActive);
-  const cameras = useQuery(api.cameras.list) as { cameraId: string; name: string }[] | undefined;
+  const cameras = useQuery(api.cameras.list);
   const updateStatus = useMutation(api.threatLogs.updateStatus);
 
   const activeCamera = cameras?.find((c) => c.cameraId === latestActiveThreat?.cameraId);
@@ -30,6 +30,10 @@ export function DetectView() {
     }
   };
 
+  const totalFeeds = cameras?.length ?? 0;
+  const activeFeeds = cameras?.filter((c) => c.enabled).length ?? 0;
+  const activeThreatsCount = latestActiveThreat ? 1 : 0;
+
   return (
     <div className="flex flex-col items-center gap-6 p-6 w-full max-w-7xl mx-auto">
       {/* Overview stats header */}
@@ -42,40 +46,51 @@ export function DetectView() {
         </div>
         <div className="flex gap-4">
           <div className="text-center">
-            <span className="block text-lg font-bold">4</span>
+            <span className="block text-lg font-bold">{totalFeeds}</span>
             <span className="text-[10px] text-muted-foreground uppercase font-semibold">Feeds</span>
           </div>
           <div className="border-r border-border" />
           <div className="text-center">
-            <span className="block text-lg font-bold text-status-nominal">3</span>
+            <span className="block text-lg font-bold text-status-nominal">{activeFeeds}</span>
             <span className="text-[10px] text-muted-foreground uppercase font-semibold">Active</span>
           </div>
           <div className="border-r border-border" />
           <div className="text-center">
-            <span className="block text-lg font-bold text-status-critical">0</span>
+            <span className="block text-lg font-bold text-status-critical">{activeThreatsCount}</span>
             <span className="text-[10px] text-muted-foreground uppercase font-semibold">Threats</span>
           </div>
         </div>
       </div>
 
-      {/* Grid of 4 cameras */}
+      {/* Dynamic Grid of cameras */}
       <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2">
-        <CameraCard
-          cameraIndex={0}
-          label="Entrance Gate A"
-        />
-        <CameraCard
-          cameraIndex={1}
-          label="Server Hall Corridor"
-        />
-        <CameraCard
-          cameraIndex={2}
-          label="Back Storage Loading Dock"
-        />
-        <CameraCard
-          cameraIndex={3}
-          label="Front Reception Lobby"
-        />
+        {cameras === undefined ? (
+          <div className="col-span-full flex justify-center items-center h-32">
+            <span className="text-xs text-muted-foreground font-medium animate-pulse">
+              Syncing hardware feeds...
+            </span>
+          </div>
+        ) : cameras.length > 0 ? (
+          cameras.map((camera, index) => (
+            <CameraCard
+              key={camera._id}
+              cameraIndex={index}
+              label={camera.name}
+              cameraId={camera.cameraId}
+              dbId={camera._id}
+              sourceType={camera.sourceType}
+              sourceKey={camera.sourceKey}
+              enabled={camera.enabled}
+            />
+          ))
+        ) : (
+          <div className="col-span-full flex flex-col items-center justify-center p-8 border border-dashed border-border/40 rounded-xl bg-muted/5 text-center h-48">
+            <p className="text-sm font-semibold text-muted-foreground">No cameras registered</p>
+            <p className="text-xs text-muted-foreground font-light mt-1">
+              Add camera inputs on the Camera Management settings page to start surveillance monitoring.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Threat Alert Dialog */}
