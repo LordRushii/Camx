@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { CameraCard } from "@/components/camera/CameraCard";
 import {
   Dialog,
@@ -13,20 +14,19 @@ import {
 import { Button } from "@/components/ui/button";
 
 export function DetectView() {
-  const [alertOpen, setAlertOpen] = useState(false);
-  const [alertInfo, setAlertInfo] = useState<{
-    readonly cameraLabel: string;
-    readonly description: string;
-  } | null>(null);
+  const latestActiveThreat = useQuery(api.threatLogs.latestActive);
+  const cameras = useQuery(api.cameras.list) as { cameraId: string; name: string }[] | undefined;
+  const updateStatus = useMutation(api.threatLogs.updateStatus);
 
-  const handleHarmDetected = (
-    result: { readonly isHarm: boolean; readonly description: string },
-    cameraLabel: string
-  ) => {
-    // Only show if alert is not already open
-    if (!alertOpen) {
-      setAlertInfo({ cameraLabel, description: result.description });
-      setAlertOpen(true);
+  const activeCamera = cameras?.find((c) => c.cameraId === latestActiveThreat?.cameraId);
+  const cameraLabel = activeCamera ? activeCamera.name : (latestActiveThreat?.cameraId ?? "");
+
+  const handleMuteAlarm = async () => {
+    if (latestActiveThreat) {
+      await updateStatus({
+        ids: [latestActiveThreat._id],
+        status: "ACKNOWLEDGED",
+      });
     }
   };
 
@@ -63,27 +63,23 @@ export function DetectView() {
         <CameraCard
           cameraIndex={0}
           label="Entrance Gate A"
-          onHarmDetected={handleHarmDetected}
         />
         <CameraCard
           cameraIndex={1}
           label="Server Hall Corridor"
-          onHarmDetected={handleHarmDetected}
         />
         <CameraCard
           cameraIndex={2}
           label="Back Storage Loading Dock"
-          onHarmDetected={handleHarmDetected}
         />
         <CameraCard
           cameraIndex={3}
           label="Front Reception Lobby"
-          onHarmDetected={handleHarmDetected}
         />
       </div>
 
       {/* Threat Alert Dialog */}
-      <Dialog open={alertOpen} onOpenChange={setAlertOpen}>
+      <Dialog open={!!latestActiveThreat} onOpenChange={(open) => { if (!open) void handleMuteAlarm(); }}>
         <DialogContent className="sm:max-w-md border-status-critical bg-card">
           <DialogHeader className="space-y-3">
             <div className="w-12 h-12 rounded-full bg-status-critical/10 flex items-center justify-center text-status-critical text-2xl mx-auto animate-bounce">
@@ -97,15 +93,15 @@ export function DetectView() {
             </DialogDescription>
           </DialogHeader>
 
-          {alertInfo && (
+          {latestActiveThreat && (
             <div className="p-4 rounded-lg bg-muted/40 border border-border/40 text-xs space-y-2">
               <div>
                 <span className="font-semibold text-muted-foreground">Source Camera:</span>{" "}
-                <span className="font-bold text-foreground">{alertInfo.cameraLabel}</span>
+                <span className="font-bold text-foreground">{cameraLabel}</span>
               </div>
               <div>
                 <span className="font-semibold text-muted-foreground">Detection:</span>{" "}
-                <span>{alertInfo.description}</span>
+                <span>{latestActiveThreat.previewText}</span>
               </div>
             </div>
           )}
@@ -113,7 +109,7 @@ export function DetectView() {
           <DialogFooter className="flex sm:justify-center gap-2">
             <Button
               variant="outline"
-              onClick={() => setAlertOpen(false)}
+              onClick={handleMuteAlarm}
               className="w-full sm:w-auto cursor-pointer"
             >
               Mute Alarm
@@ -121,7 +117,7 @@ export function DetectView() {
             <Button
               variant="destructive"
               onClick={() => {
-                setAlertOpen(false);
+                void handleMuteAlarm();
                 window.location.href = "/settings/threat-log";
               }}
               className="w-full sm:w-auto cursor-pointer"

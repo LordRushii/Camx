@@ -1,5 +1,6 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, action } from "./_generated/server";
 import { v } from "convex/values";
+import { api } from "./_generated/api";
 
 function classifySeverity(confidence: number): "critical" | "warning" | "nominal" {
   if (confidence >= 90) return "critical";
@@ -118,6 +119,64 @@ export const create = mutation({
       status: "ACTIVE",
       tags: args.tags ?? [],
       updatedAt: timestamp,
+    });
+
+    return newId;
+  },
+});
+
+export const latestActive = query({
+  args: {},
+  handler: async (ctx) => {
+    const activeLogs = await ctx.db
+      .query("threatLogs")
+      .withIndex("by_status", (q) => q.eq("status", "ACTIVE"))
+      .order("desc")
+      .take(1);
+    return activeLogs[0] ?? null;
+  },
+});
+
+export const createFromWatch = action({
+  args: {
+    cameraId: v.string(),
+    requestId: v.string(),
+    timestamp: v.string(),
+    classification: v.string(),
+    confidence: v.number(),
+    previewText: v.string(),
+    vlmAnalysis: v.array(v.string()),
+    frameBytes: v.bytes(),
+    verification: v.object({
+      applied: v.boolean(),
+      matchesPrompt: v.union(v.boolean(), v.null()),
+      overturned: v.boolean(),
+      reason: v.union(v.string(), v.null()),
+      modelKey: v.union(v.string(), v.null()),
+      latencyMs: v.union(v.number(), v.null()),
+    }),
+  },
+  handler: async (ctx, args): Promise<string> => {
+    // 1. Upload frame to Convex storage
+    const blob = new Blob([args.frameBytes], { type: "image/jpeg" });
+    const storageId = await ctx.storage.store(blob);
+
+    // 2. Get frame URL
+    const frameSrc = await ctx.storage.getUrl(storageId);
+
+    // 3. Create threat log via mutation
+    const newId: string = await ctx.runMutation(api.threatLogs.create, {
+      requestId: args.requestId,
+      timestamp: args.timestamp,
+      cameraId: args.cameraId,
+      classification: args.classification,
+      confidence: args.confidence,
+      previewText: args.previewText,
+      frameSrc,
+      frameId: storageId,
+      vlmAnalysis: args.vlmAnalysis,
+      verification: args.verification,
+      tags: ["watch"],
     });
 
     return newId;

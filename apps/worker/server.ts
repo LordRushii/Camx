@@ -8,6 +8,8 @@ import { api } from "../../convex/_generated/api.js";
 import { runOrchestrator } from "./detection/orchestrator.js";
 import { type DetectionModel } from "./detection/model.js";
 import { DetectError, toHttpStatus } from "./detection/errors.js";
+import { startWatchLoop } from "./watch/runtime.js";
+import { LmStudioProvider } from "./watch/providers/index.js";
 
 // Load env variables from root folder or local folder
 dotenv.config({ path: join(process.cwd(), "..", "..", ".env.local") });
@@ -149,4 +151,13 @@ app.post("/detect", upload.single("frame"), async (req, res) => {
 app.listen(port, () => {
   console.log(`[WORKER] Standalone detection worker running on port ${port}`);
   console.log(`[WORKER] Connected to Convex URL: ${convexUrl}`);
+
+  // Start watch/harm-verification surveillance loop
+  try {
+    const watchProvider = new LmStudioProvider();
+    startWatchLoop(convexClient, watchProvider);
+    console.log("[WORKER] Started background watch / harm-verification pipeline loop");
+  } catch (err) {
+    console.error("[WORKER] Failed to initialize watch loop:", err);
+  }
 });
