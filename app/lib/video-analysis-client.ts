@@ -23,7 +23,20 @@ function parseError(json: unknown): VideoAnalysisError {
   ) {
     return value as unknown as VideoAnalysisError;
   }
-  throw new Error("Invalid video analysis error response");
+  // Server returned an error-shaped response but not in our exact format —
+  // synthesize a conforming VideoAnalysisError so the UI always gets a
+  // displayable message instead of throwing.
+  const message =
+    typeof value?.message === "string"
+      ? value.message
+      : typeof value?.error === "string"
+        ? value.error
+        : "An unknown error occurred. The worker may be unreachable.";
+  return {
+    ok: false,
+    errorCode: typeof value?.errorCode === "string" ? value.errorCode : "INTERNAL_ERROR",
+    message,
+  } as unknown as VideoAnalysisError;
 }
 
 export function parseVideoAnalysisJobResponse(
@@ -42,7 +55,9 @@ export function parseVideoAnalysisJobResponse(
   ) {
     return value as unknown as VideoAnalysisJob;
   }
-  throw new Error("Invalid video analysis job response");
+  // Response didn't match expected job shape — return a synthetic error
+  // instead of crashing the UI with an unhandled exception.
+  return parseError({ ok: false, errorCode: "INVALID_RESPONSE", message: "Received an unexpected response from the server. Please try again." });
 }
 
 export function parseVideoAnalysisChatResponse(

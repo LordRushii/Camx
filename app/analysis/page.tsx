@@ -25,14 +25,15 @@ function buildPipelineSteps(
   totalFrames: number,
   hasError: boolean,
 ): PipelineStep[] {
+  const order = [
+    "uploading",
+    "extracting",
+    "analyzing",
+    "summarizing",
+    "completed",
+  ];
+
   const completed = (step: string) => {
-    const order = [
-      "uploading",
-      "extracting",
-      "analyzing",
-      "summarizing",
-      "completed",
-    ];
     const currentIdx = order.indexOf(uploadPhase);
     const stepIdx = order.indexOf(step);
     if (uploadPhase === "completed") return true;
@@ -44,7 +45,13 @@ function buildPipelineSteps(
     (step === "uploading" && uploadPhase === "checking_cache");
 
   const status = (step: string): StepStatus => {
-    if (hasError && isCurrent(step)) return "error";
+    // When in error state, mark the last active step (or the current step)
+    // as error. Steps completed before the error stay "complete".
+    if (hasError) {
+      if (isCurrent(step)) return "error";
+      if (completed(step)) return "complete";
+      return "pending";
+    }
     if (completed(step)) return "complete";
     if (isCurrent(step)) return "active";
     return "pending";
@@ -324,28 +331,33 @@ export default function AnalysisPage(): React.JSX.Element {
                 const isLast = idx === pipelineSteps.length - 1;
                 const isActive = step.status === "active";
                 const isComplete = step.status === "complete";
+                const isError = step.status === "error";
 
-                const rowColor = isActive
-                  ? "text-foreground"
-                  : isComplete
-                    ? "text-op-silver"
-                    : "text-op-text-sec";
+                const rowColor = isError
+                  ? "text-op-critical"
+                  : isActive
+                    ? "text-foreground"
+                    : isComplete
+                      ? "text-op-silver"
+                      : "text-op-text-sec";
 
-                const iconColor = isActive
-                  ? "text-foreground"
-                  : isComplete
-                    ? "text-op-silver"
-                    : "text-op-text-sec";
+                const iconColor = isError
+                  ? "text-op-critical"
+                  : isActive
+                    ? "text-foreground"
+                    : isComplete
+                      ? "text-op-silver"
+                      : "text-op-text-sec";
 
                 return (
                   <li key={step.id} className="flex flex-col relative">
-                    {isActive && (
-                      <div className="absolute -left-4 top-0 bottom-0 w-1 bg-op-silver" />
+                    {(isActive || isError) && (
+                      <div className={`absolute -left-4 top-0 bottom-0 w-1 ${isError ? "bg-op-critical" : "bg-op-silver"}`} />
                     )}
                     <div
                       className={`flex items-center gap-3 py-2 ${rowColor} ${
-                        isActive
-                          ? "bg-op-elevated px-2 -mx-2 rounded-sm border border-op-border"
+                        isActive || isError
+                          ? `bg-op-elevated px-2 -mx-2 rounded-sm border ${isError ? "border-op-critical/40" : "border-op-border"}`
                           : ""
                       }`}
                     >
@@ -357,15 +369,15 @@ export default function AnalysisPage(): React.JSX.Element {
                             : undefined
                         }
                       >
-                        {step.icon}
+                        {isError ? "error" : step.icon}
                       </span>
-                      <span className={isActive ? "font-medium" : ""}>
+                      <span className={isActive || isError ? "font-medium" : ""}>
                         {step.label}
                       </span>
                       <span
-                        className={`ml-auto text-[10px] ${isComplete ? "text-op-silver" : "text-op-text-sec"}`}
+                        className={`ml-auto text-[10px] ${isError ? "text-op-critical" : isComplete ? "text-op-silver" : "text-op-text-sec"}`}
                       >
-                        {step.stat}
+                        {isError ? "ERR" : step.stat}
                       </span>
                     </div>
                     {!isLast && (

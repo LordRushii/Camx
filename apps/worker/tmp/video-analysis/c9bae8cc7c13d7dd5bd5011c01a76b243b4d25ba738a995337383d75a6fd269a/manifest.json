@@ -1,0 +1,218 @@
+{
+  "fingerprint": "c9bae8cc7c13d7dd5bd5011c01a76b243b4d25ba738a995337383d75a6fd269a",
+  "sourceFileName": "Brixton gun attack captured on CCTV - Guardian News (720p, h264).mp4",
+  "sourceByteLength": 3211009,
+  "videoPath": "D:\\Projects\\Camx\\apps\\worker\\tmp\\video-analysis\\c9bae8cc7c13d7dd5bd5011c01a76b243b4d25ba738a995337383d75a6fd269a\\source.mp4",
+  "frameCount": 26,
+  "createdAt": "2026-07-09T18:34:34.917Z",
+  "frames": [
+    {
+      "frameIndex": 0,
+      "timestampMs": 0,
+      "timestampLabel": "00:00.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/afea1f6c-a938-4a37-80b1-524299f76616",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 1,
+      "timestampMs": 1000,
+      "timestampLabel": "00:01.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/af4a63a6-9a0d-4cfa-bf14-80e856101769",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 2,
+      "timestampMs": 2000,
+      "timestampLabel": "00:02.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/952f55b4-4603-41da-9155-32a88e3709e7",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 3,
+      "timestampMs": 3000,
+      "timestampLabel": "00:03.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/69a711b1-fa8f-4552-9940-b4f794d98140",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 4,
+      "timestampMs": 4000,
+      "timestampLabel": "00:04.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/59ade39c-c430-47d6-aaac-b00e5b19541e",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 5,
+      "timestampMs": 5000,
+      "timestampLabel": "00:05.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/90ed19b9-043a-44c6-bfed-feb0fbfee8be",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 6,
+      "timestampMs": 6000,
+      "timestampLabel": "00:06.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/f98e8d88-4b01-407e-a96c-74f73622ef4d",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 7,
+      "timestampMs": 7000,
+      "timestampLabel": "00:07.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/76419be4-3a70-46c5-acfd-11bd6970fc36",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 8,
+      "timestampMs": 8000,
+      "timestampLabel": "00:08.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/56e87212-6e22-4df9-ad9e-17805dcb7d59",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 9,
+      "timestampMs": 9000,
+      "timestampLabel": "00:09.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/d4b40af3-a788-4ee5-8941-ec1a5d63143d",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 10,
+      "timestampMs": 10000,
+      "timestampLabel": "00:10.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/bf3b10c3-3fbf-40ea-8e9f-af72bdb7355a",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 11,
+      "timestampMs": 11000,
+      "timestampLabel": "00:11.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/425b6f64-ee3b-4be9-95f2-ff4e09ba3227",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 12,
+      "timestampMs": 12000,
+      "timestampLabel": "00:12.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/ddd3b2a1-d6cd-4cb2-8a98-eb8b5509cc0e",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 13,
+      "timestampMs": 13000,
+      "timestampLabel": "00:13.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/7cdf47e2-e915-4f98-93b5-97a067d11e87",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 14,
+      "timestampMs": 14000,
+      "timestampLabel": "00:14.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/06bc97d0-68b0-44f2-b1ee-5283036f725a",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 15,
+      "timestampMs": 15000,
+      "timestampLabel": "00:15.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/d51e0ca3-1c40-45f8-8bec-816076b08109",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 16,
+      "timestampMs": 16000,
+      "timestampLabel": "00:16.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/747f3899-be51-4059-9b4a-9b14d3b55406",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 17,
+      "timestampMs": 17000,
+      "timestampLabel": "00:17.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/7093cb42-16c8-4594-8fea-c1ef1eb8f249",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 18,
+      "timestampMs": 18000,
+      "timestampLabel": "00:18.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/d659f19c-566b-4bfa-aa62-0a8e8ee07df7",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 19,
+      "timestampMs": 19000,
+      "timestampLabel": "00:19.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/78ca0492-db30-4e23-b9f2-47840cc8bd4a",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 20,
+      "timestampMs": 20000,
+      "timestampLabel": "00:20.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/16fc6906-5d12-4366-b7eb-6bc443b73ecb",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 21,
+      "timestampMs": 21000,
+      "timestampLabel": "00:21.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/ab6f5ef4-b430-42fe-80fe-6f2b31f99599",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 22,
+      "timestampMs": 22000,
+      "timestampLabel": "00:22.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/d9acb6b2-856c-4f5c-bfe5-4e380518a5d6",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 23,
+      "timestampMs": 23000,
+      "timestampLabel": "00:23.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/a6ca2286-04f5-4c47-800b-4301b97c4710",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 24,
+      "timestampMs": 24000,
+      "timestampLabel": "00:24.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/05275075-84b5-457b-a0ff-bfbc0f066823",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "frameIndex": 25,
+      "timestampMs": 25000,
+      "timestampLabel": "00:25.000",
+      "imagePath": "https://hip-opossum-909.eu-west-1.convex.cloud/api/storage/635203c7-09fe-415d-aa59-7a220b2fa4b9",
+      "width": 1280,
+      "height": 720
+    }
+  ]
+}

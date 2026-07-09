@@ -148,10 +148,23 @@ class VideoAnalysisApplicationService {
 
     const existing = await this.loadByFingerprint(fingerprint);
     if (input.forceRefresh && existing) {
+      // Explicit cache-bust: wipe old job from memory, disk, and Convex
       this.jobsById.delete(existing.jobId);
       this.jobsByFingerprint.delete(existing.fingerprint);
       await this.worker.removeArtifacts(existing.fingerprint);
+      const storeObj = this.store as any;
+      if (storeObj.convexClient) {
+        try {
+          await storeObj.convexClient.mutation(api.videoJobs.deleteJob, {
+            jobId: existing.jobId as any,
+          });
+        } catch (err) {
+          console.warn(`[SERVICE] Failed to delete refresh job from Convex:`, err);
+        }
+      }
     } else if (existing) {
+      // Return existing job as-is, including any error state — let the UI
+      // display the error and prompt the user to click "Fresh Run".
       const cacheSource = this.worker.isRunning(existing.jobId)
         ? "memory"
         : "disk";
@@ -319,6 +332,22 @@ class VideoAnalysisApplicationService {
     } catch (error) {
       const failed = await this.loadById(jobId);
       if (!failed) return;
+
+      // Detect LM Studio / VLM provider connection failures and surface a
+      // clear, actionable error message instead of a raw ECONNREFUSED stack.
+      let errorMessage =
+        error instanceof Error ? error.message : "Unknown video analysis error";
+      const isConnRefused =
+        errorMessage.includes("ECONNREFUSED") ||
+        errorMessage.includes("WebSocket connection refused") ||
+        errorMessage.includes("connect ECONNREFUSED");
+      if (isConnRefused) {
+        errorMessage =
+          "Cannot connect to the VLM provider (LM Studio). " +
+          "Please start LM Studio, enable its local API server (port 1234), " +
+          "load your vision model, then click \"Fresh Run\" to retry.";
+      }
+
       await this.persist({
         ...failed,
         status: "error",
@@ -327,10 +356,7 @@ class VideoAnalysisApplicationService {
           stage: "error",
         },
         updatedAt: new Date().toISOString(),
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown video analysis error",
+        error: errorMessage,
       });
     }
   }
@@ -356,6 +382,18 @@ class VideoAnalysisApplicationService {
     this.jobsById.delete(job.jobId);
     this.jobsByFingerprint.delete(job.fingerprint);
     await this.worker.removeArtifacts(job.fingerprint);
+
+    const storeObj = this.store as any;
+    if (storeObj.convexClient) {
+      try {
+        await storeObj.convexClient.mutation(api.videoJobs.deleteJob, {
+          jobId: jobId as any,
+        });
+      } catch (err) {
+        console.error(`[SERVICE] Failed to delete job from Convex:`, err);
+      }
+    }
+
     return this.toPublicJob(job);
   }
 

@@ -130,3 +130,17 @@ export const uploadFrame = action({
     return { storageId, url };
   },
 });
+
+export const deleteJob = mutation({
+  args: { jobId: v.id("videoJobs") },
+  handler: async (ctx, args) => {
+    const entries = await ctx.db
+      .query("timelineEntries")
+      .withIndex("by_jobId_and_frameIndex", (q) => q.eq("jobId", args.jobId))
+      .collect();
+    for (const entry of entries) {
+      await ctx.db.delete(entry._id);
+    }
+    await ctx.db.delete(args.jobId);
+  },
+});
