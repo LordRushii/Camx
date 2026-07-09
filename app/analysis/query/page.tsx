@@ -1,131 +1,515 @@
 "use client";
 
+import type React from "react";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
+import { useAnalysisSession } from "@/components/analysis/video-watch-session";
 
-interface ChatMessage {
-  sender: "user" | "ai";
-  text: string;
-  timestamp: string;
-  frameRef?: string;
-}
+// ─── Mock sessions (left sidebar) ────────────────────────────────────────────
 
-export default function VideoQueryPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { sender: "ai", text: "Hello! I have loaded the timeline for `test-footage.mp4`. You can ask questions about moving objects, time events, or potential threats.", timestamp: "22:48:00" },
-    { sender: "user", text: "When did the first person enter the building?", timestamp: "22:48:30" },
-    { sender: "ai", text: "The first person enters the camera frame at 00:12:45 of the video clip, carrying a black backpack. They walk from right to left toward the lobby receptionist area.", timestamp: "22:48:32", frameRef: "frame-000150.jpg" },
-  ]);
+const MOCK_SESSIONS = [
+  {
+    id: "s1",
+    title: "Anomalies at Bay Entrance",
+    ts: "14:22:05Z",
+    msgCount: 4,
+    active: true,
+    dot: "nominal",
+  },
+  {
+    id: "s2",
+    title: "Vehicle Count Analysis",
+    ts: "11:45:12Z",
+    msgCount: 12,
+    active: false,
+    dot: null,
+  },
+  {
+    id: "s3",
+    title: "Suspicious Behavior Log",
+    ts: "09:12:00Z",
+    msgCount: 2,
+    active: false,
+    dot: null,
+  },
+] as const;
 
-  const [inputText, setInputText] = useState("");
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
-  const handleSendMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputText.trim()) return;
+export default function AnalysisQueryPage(): React.JSX.Element {
+  const {
+    isReplyProcessing,
+    isVideoReady,
+    job,
+    messages,
+    selectedVideoName,
+    selectedVideoUrl,
+    sendMessage,
+    clearMessages,
+    uploadPhase,
+  } = useAnalysisSession();
 
-    const userMsg: ChatMessage = {
-      sender: "user",
-      text: inputText,
-      timestamp: new Date().toTimeString().split(" ")[0],
-    };
+  const [inputValue, setInputValue] = useState("");
+  const [videoExpanded, setVideoExpanded] = useState(true);
 
-    setMessages((prev) => [...prev, userMsg]);
-    setInputText("");
-
-    // Simulate AI response
-    setTimeout(() => {
-      const aiMsg: ChatMessage = {
-        sender: "ai",
-        text: "Based on the analyzed timeline, I did not observe any other occurrences matching that action. However, the camera 2 feed recorded a similar subject exiting the corridor at 00:15:30.",
-        timestamp: new Date().toTimeString().split(" ")[0],
-        frameRef: "frame-000210.jpg",
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-    }, 1000);
+  const handleSend = () => {
+    const trimmed = inputValue.trim();
+    if (!trimmed || isReplyProcessing || !isVideoReady) return;
+    void sendMessage(trimmed);
+    setInputValue("");
   };
 
-  return (
-    <div className="p-8 space-y-6">
-      <div>
-        <h2 className="text-xl font-bold tracking-tight">Footage Q&A Chat</h2>
-        <p className="text-sm text-muted-foreground">
-          Query analyzed events, object sequences, and timeline tags using natural language.
-        </p>
-      </div>
-      <Separator />
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
 
-      <div className="grid gap-6 md:grid-cols-4 h-[calc(100vh-12rem)] min-h-0">
-        {/* Left col: Sessions list */}
-        <div className="md:col-span-1 border border-border rounded-lg bg-background flex flex-col p-4 space-y-4 overflow-y-auto">
-          <h3 className="font-semibold text-xs text-muted-foreground uppercase tracking-wider">Analyzed Footage</h3>
-          <div className="space-y-2">
-            <button className="w-full text-left text-xs p-3 rounded-lg border border-border bg-secondary font-medium truncate cursor-pointer block">
-              🎥 test-footage.mp4
-              <span className="block font-normal text-xxs text-muted-foreground mt-1">Analyzed 10 mins ago</span>
-            </button>
-            <button className="w-full text-left text-xs p-3 rounded-lg border border-border bg-background hover:bg-muted/10 font-medium truncate cursor-not-allowed opacity-50 block" disabled>
-              🎥 main-gate-recording.mp4
-              <span className="block font-normal text-xxs text-muted-foreground mt-1">Archived 2 days ago</span>
-            </button>
+  const cameraLabel = selectedVideoName
+    ? selectedVideoName.replace(/\.[^.]+$/, "").toUpperCase()
+    : "CAM_04";
+
+  const systemStatus =
+    uploadPhase === "completed"
+      ? "SYS.READY"
+      : uploadPhase === "error"
+        ? "SYS.ERROR"
+        : uploadPhase === "idle"
+          ? "SYS.IDLE"
+          : "SYS.PROCESSING";
+
+  const statusDotClass =
+    uploadPhase === "completed"
+      ? "bg-op-nominal"
+      : uploadPhase === "error"
+        ? "bg-op-critical"
+        : "bg-op-warning";
+
+  const placeholder = isVideoReady
+    ? "Query the intelligence layer..."
+    : uploadPhase === "idle"
+      ? "Upload a video on the Analysis tab first..."
+      : "Analysis in progress, please wait...";
+
+  return (
+    <div className="flex-1 flex overflow-hidden h-full">
+      {/* ── Left Sidebar: Session Management ─────────────── */}
+      <aside className="w-72 border-r border-op-border bg-op-surface flex-col h-full shrink-0 hidden lg:flex">
+        {/* Header */}
+        <div className="p-4 border-b border-op-border flex justify-between items-center bg-op-elevated shrink-0">
+          <h2 className="font-mono text-base font-medium text-foreground">
+            Active Recording
+          </h2>
+          <span className="px-2 py-0.5 border border-op-border-active text-op-silver text-[10px] font-mono uppercase tracking-wider">
+            {cameraLabel.slice(0, 8)}
+          </span>
+        </div>
+
+        {/* New Query button */}
+        <div className="p-4 border-b border-op-border shrink-0">
+          <button
+            type="button"
+            onClick={clearMessages}
+            className="w-full bg-op-elevated border border-op-border hover:border-op-border-active text-op-silver py-2.5 px-4 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition-colors duration-75"
+          >
+            <span
+              className="material-symbols-outlined text-[18px]"
+              style={{ fontVariationSettings: '"wght" 300' }}
+            >
+              add
+            </span>
+            New Query
+          </button>
+        </div>
+
+        {/* Recent Sessions */}
+        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3">
+          <div className="text-[10px] text-op-text-sec font-mono uppercase tracking-widest mb-3 px-1">
+            RECENT SESSIONS
+          </div>
+
+          {MOCK_SESSIONS.map((s) => (
+            <div
+              key={s.id}
+              className={`p-3.5 cursor-pointer transition-all duration-75 ${
+                s.active
+                  ? "bg-op-elevated border border-op-silver hover:border-foreground"
+                  : "bg-transparent border border-op-border hover:bg-op-elevated/70 hover:border-op-border-active"
+              }`}
+            >
+              <div className="flex justify-between items-start">
+                <span className="font-mono text-[13px] text-foreground leading-tight pr-2 line-clamp-2">
+                  {s.title}
+                </span>
+                <span
+                  className="material-symbols-outlined text-[16px] shrink-0"
+                  style={{
+                    color: s.active ? "#C0C0C0" : "#5C5C5C",
+                    fontVariationSettings: '"wght" 300',
+                  }}
+                >
+                  more_vert
+                </span>
+              </div>
+              <div className="flex justify-between items-center mt-3 text-[10px] font-mono text-op-text-sec">
+                <span>{s.ts}</span>
+                <span className="flex items-center gap-1">
+                  {s.dot === "nominal" && (
+                    <span className="w-1.5 h-1.5 bg-op-nominal rounded-full" />
+                  )}
+                  {s.msgCount} MSGS
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-op-border p-3 text-[10px] font-mono text-op-text-sec text-center shrink-0">
+          {MOCK_SESSIONS.length} SESSIONS •{" "}
+          {MOCK_SESSIONS.reduce((a, s) => a + s.msgCount, 0)} MSGS TOTAL
+        </div>
+      </aside>
+
+      {/* ── Center Column: Chat ────────────────────────────── */}
+      <main className="flex-1 min-w-0 flex flex-col bg-op-surface border-x border-op-border">
+        {/* Status bar */}
+        <div className="h-10 border-b border-op-border flex items-center px-4 justify-between bg-op-elevated shrink-0">
+          <div className="flex items-center space-x-2">
+            <span className={`w-2 h-2 rounded-full ${statusDotClass}`} />
+            <span className="font-mono text-xs text-op-text-sec">
+              {systemStatus}
+            </span>
+          </div>
+          <div className="flex items-center space-x-4">
+            <span className="font-mono text-xs text-op-text-sec">
+              VLM_MODE: ON
+            </span>
+            <span className="font-mono text-xs text-op-text-sec hidden sm:inline">
+              MODEL: SEC-L-V3
+            </span>
           </div>
         </div>
 
-        {/* Right 3 cols: Chat window */}
-        <div className="md:col-span-3 border border-border rounded-lg bg-background flex flex-col min-h-0 overflow-hidden">
-          {/* Chat header */}
-          <div className="p-4 border-b border-border bg-muted/10 flex items-center justify-between">
-            <span className="text-xs font-semibold">Active Session: test-footage.mp4</span>
-            <span className="text-xxs text-status-nominal font-mono">Index Connected</span>
-          </div>
-
-          {/* Conversation view */}
-          <div className="flex-1 p-6 overflow-y-auto space-y-4">
-            {messages.map((msg, index) => (
-              <div
-                key={index}
-                className={`flex flex-col gap-1 max-w-[80%] ${
-                  msg.sender === "user" ? "ml-auto items-end" : "mr-auto items-start"
-                }`}
+        {/* Chat history */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-6 flex flex-col min-h-0">
+          {/* Empty state */}
+          {messages.length === 0 && !isReplyProcessing && (
+            <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4">
+              <span
+                className="material-symbols-outlined text-[3rem] text-op-text-muted"
+                style={{ fontVariationSettings: '"wght" 100' }}
               >
+                neurology
+              </span>
+              <div className="font-mono text-sm text-op-text-sec">
+                SYSTEM WAITING FOR QUERY
+              </div>
+              {isVideoReady && (
+                <div className="flex flex-wrap justify-center gap-2 max-w-125 mt-4">
+                  {[
+                    "Summarize all events in this footage",
+                    "What objects were detected?",
+                    "Identify any unusual activity",
+                  ].map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => {
+                        setInputValue(q);
+                      }}
+                      className="bg-op-elevated border border-op-border hover:border-op-border-active text-op-silver px-3 py-1.5 font-mono text-xs duration-75"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!isVideoReady && uploadPhase === "idle" && (
+                <p className="font-mono text-xs text-op-text-muted max-w-xs">
+                  Navigate to the Video Analysis tab, upload a video, and wait
+                  for analysis to complete before querying.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Message list */}
+          {messages.map((msg) => {
+            const isUser = msg.role === "user";
+            return (
+              <div
+                key={msg.id}
+                className={`flex flex-col w-full ${isUser ? "items-end" : "items-start"}`}
+              >
+                {/* Sender label */}
                 <div
-                  className={`p-3 rounded-lg text-xs leading-relaxed ${
-                    msg.sender === "user"
-                      ? "bg-primary text-primary-foreground rounded-br-none"
-                      : "bg-muted text-foreground rounded-bl-none border border-border/40"
+                  className={`text-[0.65rem] font-mono text-op-text-sec mb-1 flex items-center space-x-2 ${
+                    isUser ? "flex-row-reverse space-x-reverse" : ""
                   }`}
                 >
-                  {msg.text}
-                </div>
-                {msg.frameRef && (
-                  <div className="mt-1.5 p-2 rounded-md border border-border bg-muted/40 flex items-center gap-2 cursor-pointer hover:bg-muted/80 transition-colors">
-                    <span className="text-xxs">🖼️</span>
-                    <span className="text-xxs font-mono font-semibold text-primary underline">
-                      {msg.frameRef}
+                  {!isUser && (
+                    <span
+                      className="material-symbols-outlined text-[12px] text-op-silver"
+                      style={{ fontVariationSettings: '"wght" 300' }}
+                    >
+                      smart_toy
                     </span>
-                    <span className="text-xxs text-muted-foreground">(Jump to frame)</span>
+                  )}
+                  <span>{isUser ? "USER" : "VLM"}</span>
+                </div>
+
+                {/* Bubble */}
+                {isUser ? (
+                  <div className="bg-op-elevated border border-op-border-active p-3 max-w-[80%] text-sm text-op-silver font-mono">
+                    {msg.content}
+                  </div>
+                ) : (
+                  <div className="bg-op-base border border-op-border p-4 w-full text-sm font-mono text-op-silver space-y-3">
+                    <p>{msg.content}</p>
                   </div>
                 )}
-                <span className="text-xxs text-muted-foreground">{msg.timestamp}</span>
               </div>
-            ))}
+            );
+          })}
+
+          {/* Thinking indicator */}
+          {isReplyProcessing && (
+            <div className="flex flex-col items-start w-full">
+              <div className="text-[0.65rem] font-mono text-op-text-sec mb-1 flex items-center space-x-2">
+                <span
+                  className="material-symbols-outlined text-[12px] text-op-silver"
+                  style={{ fontVariationSettings: '"wght" 300' }}
+                >
+                  smart_toy
+                </span>
+                <span>VLM // PROCESSING...</span>
+              </div>
+              <div className="bg-op-base border border-op-border p-4 w-full">
+                <div className="flex items-center space-x-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-op-silver animate-bounce [animation-delay:0ms]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-op-silver animate-bounce [animation-delay:150ms]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-op-silver animate-bounce [animation-delay:300ms]" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div
+            key={messages.length}
+            ref={(node) => {
+              node?.scrollIntoView({ behavior: "smooth" });
+            }}
+          />
+        </div>
+
+        {/* Input area */}
+        <div className="p-4 border-t border-op-border bg-op-surface shrink-0">
+          <div className="relative flex items-center border border-op-border bg-op-base focus-within:border-op-silver duration-75">
+            <div className="pl-3 pr-2 text-op-silver font-mono font-bold">
+              &gt;
+            </div>
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => {
+                setInputValue(e.target.value);
+              }}
+              onKeyDown={handleKeyDown}
+              disabled={!isVideoReady || isReplyProcessing}
+              placeholder={placeholder}
+              className="w-full bg-transparent border-none text-sm text-op-silver placeholder:text-op-text-muted focus:ring-0 font-mono py-3 outline-none disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={
+                !isVideoReady || isReplyProcessing || !inputValue.trim()
+              }
+              className="pr-3 pl-2 text-op-text-sec hover:text-op-silver duration-75 flex items-center disabled:opacity-30"
+            >
+              <span
+                className="material-symbols-outlined"
+                style={{ fontVariationSettings: '"wght" 200' }}
+              >
+                send
+              </span>
+            </button>
           </div>
 
-          {/* Input box */}
-          <form onSubmit={handleSendMessage} className="p-4 border-t border-border bg-muted/10 flex gap-2">
-            <Input
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Ask about visible objects (e.g. 'What was the person carrying?')"
-              className="flex-1 bg-background"
-            />
-            <Button type="submit" className="cursor-pointer">
-              Send
-            </Button>
-          </form>
+          <div className="flex justify-between items-center mt-2 px-1">
+            <div className="flex space-x-3">
+              <button
+                type="button"
+                className="text-[0.65rem] font-mono text-op-text-sec hover:text-op-silver flex items-center space-x-1 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[12px]">
+                  attachment
+                </span>
+                <span>ADD REF</span>
+              </button>
+              <button
+                type="button"
+                className="text-[0.65rem] font-mono text-op-text-sec hover:text-op-silver flex items-center space-x-1 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[12px]">
+                  history
+                </span>
+                <span>HISTORY</span>
+              </button>
+            </div>
+            <span className="text-[0.65rem] font-mono text-op-text-muted">
+              CMD+ENTER TO SEND
+            </span>
+          </div>
         </div>
-      </div>
+      </main>
+
+      {/* ── Right Panel: Context Sources ───────────────────── */}
+      <aside className="w-55 bg-op-surface border-l border-op-border flex-col shrink-0 hidden xl:flex">
+        {/* Header */}
+        <div className="h-10 border-b border-op-border flex items-center px-3 bg-op-elevated shrink-0">
+          <span className="font-mono text-xs text-op-text-sec tracking-tight">
+            CONTEXT SOURCES
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 space-y-4">
+          {/* Active video preview */}
+          {selectedVideoUrl && (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="text-[0.65rem] font-mono text-op-text-sec">
+                  ACTIVE VIDEO
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVideoExpanded((v) => !v)}
+                  className="text-[0.65rem] font-mono text-op-text-sec hover:text-op-silver transition-colors"
+                >
+                  {videoExpanded ? "HIDE" : "SHOW"}
+                </button>
+              </div>
+              {videoExpanded && (
+                <div className="relative bg-black border border-op-border overflow-hidden aspect-video mb-1.5">
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                  <video
+                    src={selectedVideoUrl}
+                    className="w-full h-full object-contain grayscale"
+                    muted
+                    playsInline
+                  />
+                  <div className="absolute inset-0 pointer-events-none border border-op-border-active" />
+                </div>
+              )}
+              <div className="text-[0.65rem] font-mono text-op-text-sec truncate">
+                {selectedVideoName || "UNKNOWN"}
+              </div>
+            </div>
+          )}
+
+          {/* Active Ingestion */}
+          <div>
+            <div className="text-[0.65rem] font-mono text-op-text-sec mb-2">
+              ACTIVE INGESTION
+            </div>
+            {job ? (
+              <>
+                <div className="text-sm font-mono text-op-silver">
+                  {job.progress.totalFrames ?? "—"} FRAMES
+                </div>
+                <div className="text-[0.65rem] font-mono text-op-text-sec mt-1 truncate">
+                  SOURCE: {selectedVideoName ?? "UNKNOWN"}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-sm font-mono text-op-silver">
+                  47 RECORDINGS
+                </div>
+                <div className="text-[0.65rem] font-mono text-op-text-sec mt-1">
+                  TIME WINDOW: 4H 00M
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Referenced Cams */}
+          <div>
+            <div className="text-[0.65rem] font-mono text-op-text-sec mb-2 border-b border-op-border pb-1">
+              REFERENCED CAMS
+            </div>
+            <div className="space-y-1 mt-2">
+              {[
+                { id: "LDK_CAM_01", dot: "nominal" },
+                { id: "LDK_CAM_02", dot: "nominal" },
+                { id: "LDK_CAM_04_A", dot: "warn" },
+              ].map((cam) => (
+                <div
+                  key={cam.id}
+                  className="flex items-center justify-between group cursor-pointer"
+                >
+                  <div className="flex items-center space-x-2">
+                    <span
+                      className={`w-1 h-1 rounded-full ${
+                        cam.dot === "warn" ? "bg-op-warning" : "bg-op-nominal"
+                      }`}
+                    />
+                    <span className="font-mono text-xs text-op-silver group-hover:text-foreground transition-colors">
+                      {cam.id}
+                    </span>
+                  </div>
+                  <span
+                    className="material-symbols-outlined text-[12px] text-op-text-muted group-hover:text-op-text-sec transition-colors"
+                    style={{ fontVariationSettings: '"wght" 200' }}
+                  >
+                    visibility
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* VLM Parameters */}
+          <div className="border border-op-border bg-op-base p-2">
+            <div className="text-[0.65rem] font-mono text-op-text-sec mb-1">
+              VLM PARAMETERS
+            </div>
+            <div className="flex justify-between items-center mt-1">
+              <span className="font-mono text-[0.65rem] text-op-text-sec">
+                TEMP
+              </span>
+              <span className="font-mono text-xs text-op-silver">0.2</span>
+            </div>
+            <div className="flex justify-between items-center mt-1">
+              <span className="font-mono text-[0.65rem] text-op-text-sec">
+                TOP_K
+              </span>
+              <span className="font-mono text-xs text-op-silver">40</span>
+            </div>
+            <div className="flex justify-between items-center mt-1 pt-1 border-t border-op-border">
+              <span className="font-mono text-[0.65rem] text-op-text-sec">
+                TOKENS
+              </span>
+              <span className="font-mono text-xs text-op-silver">1,402</span>
+            </div>
+          </div>
+
+          {/* Export Log */}
+          <button
+            type="button"
+            className="w-full bg-transparent border border-op-border text-op-silver font-mono text-xs py-2 hover:border-op-silver hover:bg-op-elevated duration-75 flex items-center justify-center space-x-2"
+          >
+            <span
+              className="material-symbols-outlined text-[14px]"
+              style={{ fontVariationSettings: '"wght" 200' }}
+            >
+              download
+            </span>
+            <span>EXPORT LOG</span>
+          </button>
+        </div>
+      </aside>
     </div>
   );
 }

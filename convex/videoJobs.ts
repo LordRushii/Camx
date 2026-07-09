@@ -1,4 +1,4 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, action } from "./_generated/server";
 import { v } from "convex/values";
 
 export const create = mutation({
@@ -108,5 +108,25 @@ export const getByFingerprint = query({
       .withIndex("by_fingerprint", (q) => q.eq("fingerprint", args.fingerprint))
       .order("desc")
       .first();
+  },
+});
+
+export const get = query({
+  args: { jobId: v.id("videoJobs") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.jobId);
+  },
+});
+
+export const uploadFrame = action({
+  args: {
+    frameBytes: v.bytes(),
+  },
+  handler: async (ctx, args) => {
+    const blob = new Blob([args.frameBytes], { type: "image/png" });
+    const storageId = await ctx.storage.store(blob);
+    const url = await ctx.storage.getUrl(storageId);
+    if (!url) throw new Error("Failed to get storage URL for uploaded frame");
+    return { storageId, url };
   },
 });

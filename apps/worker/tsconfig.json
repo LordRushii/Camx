@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM"],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -12,8 +12,11 @@
     "rootDir": "../..",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["../../app/*", "../../components/*", "../../lib/*"],
-      "convex/_generated/*": ["../../convex/_generated/*"]
+      "@/*": ["../../app/*", "../../components/*", "../../lib/*", "../../types/*", "../../*"],
+      "convex/_generated/*": ["../../convex/_generated/*"],
+      "sharp": ["node_modules/sharp"],
+      "@lmstudio/sdk": ["node_modules/@lmstudio/sdk"],
+      "ffprobe-static": ["node_modules/ffprobe-static"]
     }
   },
   "include": ["**/*.ts", "../../convex/_generated/**/*.ts"]

@@ -148,7 +148,14 @@ export default defineSchema({
       })
     ),
     createdAt: v.number(),
-  }).index("by_jobId_and_frameIndex", ["jobId", "frameIndex"]),
+    embedding: v.optional(v.array(v.number())),
+  })
+    .index("by_jobId_and_frameIndex", ["jobId", "frameIndex"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 768,
+      filterFields: ["jobId"],
+    }),
 
   users: defineTable({
     name: v.optional(v.string()),

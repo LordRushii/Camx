@@ -10,6 +10,9 @@ import { type DetectionModel } from "./detection/model.js";
 import { DetectError, toHttpStatus } from "./detection/errors.js";
 import { startWatchLoop } from "./watch/runtime.js";
 import { LmStudioProvider } from "./watch/providers/index.js";
+import { videoAnalysisService } from "./video/application/index.js";
+import { defaultProviderConfig, parseProviderConfigFromFormData } from "./video/providers/runtime.js";
+import { toErrorResponse } from "./video/contracts/error-codes.js";
 
 // Load env variables from root folder or local folder
 dotenv.config({ path: join(process.cwd(), "..", "..", ".env.local") });
@@ -145,6 +148,85 @@ app.post("/detect", upload.single("frame"), async (req, res) => {
       errorCode: "INTERNAL_ERROR",
       message: error instanceof Error ? error.message : "An unexpected error occurred",
     });
+  }
+});
+
+const videoUpload = multer({
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB
+  },
+});
+
+app.post("/video/jobs", videoUpload.single("video"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ ok: false, message: "Missing 'video' file" });
+    }
+    const forceRefresh = req.body.forceRefresh === "true";
+    const clientFingerprint = typeof req.body.clientFingerprint === "string" ? req.body.clientFingerprint : null;
+    const modelConfigStr = typeof req.body.model_config === "string" ? req.body.model_config : null;
+
+    const providerConfig = parseProviderConfigFromFormData(modelConfigStr);
+
+    const job = await videoAnalysisService.createJob({
+      sourceFileName: file.originalname,
+      videoBuffer: file.buffer,
+      clientFingerprint,
+      forceRefresh,
+      providerConfig,
+    });
+
+    return res.status(200).json(job);
+  } catch (error) {
+    const handled = toErrorResponse(error);
+    return res.status(handled.status).json(handled.body);
+  }
+});
+
+app.get("/video/jobs/:jobId", async (req, res) => {
+  try {
+    const job = await videoAnalysisService.getJobStatus({ jobId: req.params.jobId });
+    if (!job) {
+      return res.status(404).json({ ok: false, message: "Job not found" });
+    }
+    return res.status(200).json(job);
+  } catch (error) {
+    const handled = toErrorResponse(error);
+    return res.status(handled.status).json(handled.body);
+  }
+});
+
+app.delete("/video/jobs/:jobId", async (req, res) => {
+  try {
+    const job = await videoAnalysisService.clearJob(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ ok: false, message: "Job not found" });
+    }
+    return res.status(200).json(job);
+  } catch (error) {
+    const handled = toErrorResponse(error);
+    return res.status(handled.status).json(handled.body);
+  }
+});
+
+app.post("/video/jobs/:jobId/chat", async (req, res) => {
+  try {
+    const { question, messages, timeRange } = req.body;
+    const result = await videoAnalysisService.answerQuestion({
+      jobId: req.params.jobId,
+      question,
+      messages,
+      timeRange,
+    });
+    return res.status(200).json({
+      ok: true,
+      answer: result.answer,
+      modelKey: result.modelKey,
+    });
+  } catch (error) {
+    const handled = toErrorResponse(error);
+    return res.status(handled.status).json(handled.body);
   }
 });
 

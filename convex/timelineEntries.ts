@@ -1,5 +1,7 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, action } from "./_generated/server";
 import { v } from "convex/values";
+import { api } from "./_generated/api";
+import { Doc } from "./_generated/dataModel";
 
 export const insert = mutation({
   args: {
@@ -53,5 +55,48 @@ export const listByJob = query({
       .withIndex("by_jobId_and_frameIndex", (q) => q.eq("jobId", args.jobId))
       .order("asc")
       .collect();
+  },
+});
+
+export const get = query({
+  args: { id: v.id("timelineEntries") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.id);
+  },
+});
+
+export const updateEmbedding = mutation({
+  args: {
+    id: v.id("timelineEntries"),
+    embedding: v.array(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.id, { embedding: args.embedding });
+  },
+});
+
+export const vectorSearch = action({
+  args: {
+    jobId: v.id("videoJobs"),
+    queryVector: v.array(v.number()),
+    limit: v.number(),
+  },
+  handler: async (ctx, args): Promise<(Doc<"timelineEntries"> & { score: number })[]> => {
+    const results = await ctx.vectorSearch("timelineEntries", "by_embedding", {
+      vector: args.queryVector,
+      limit: args.limit,
+      filter: (q) => q.eq("jobId", args.jobId),
+    });
+    const documents = [];
+    for (const result of results) {
+      const doc: Doc<"timelineEntries"> | null = await ctx.runQuery(api.timelineEntries.get, { id: result._id });
+      if (doc) {
+        documents.push({
+          ...doc,
+          score: result._score,
+        });
+      }
+    }
+    return documents;
   },
 });
