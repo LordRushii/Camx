@@ -11,7 +11,7 @@ import { DetectError, toHttpStatus } from "./detection/errors.js";
 import { startWatchLoop } from "./watch/runtime.js";
 import { LmStudioProvider } from "./watch/providers/index.js";
 import { videoAnalysisService } from "./video/application/index.js";
-import { defaultProviderConfig, parseProviderConfigFromFormData } from "./video/providers/runtime.js";
+import { parseProviderConfigFromFormData } from "./video/providers/runtime.js";
 import { toErrorResponse } from "./video/contracts/error-codes.js";
 
 // Load env variables from root folder or local folder

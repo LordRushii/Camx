@@ -176,11 +176,26 @@ export class LocalVideoAnalysisStore implements VideoAnalysisStore {
 
     const providerConfig = {
       provider: "lmstudio" as const,
-      baseUrl: process.env.NEXT_PUBLIC_LMSTUDIO_URL || "http://127.0.0.1:1234",
-      apiToken: process.env.LMSTUDIO_API_TOKEN || "",
-      frameModelKey: process.env.LMSTUDIO_FRAME_MODEL || "lfm-ucf-400m",
-      summaryModelKey: process.env.LMSTUDIO_SUMMARY_MODEL || "google/gemma-4-e4b",
-      embeddingModelKey: process.env.LMSTUDIO_EMBEDDING_MODEL || "nomic-embed-text-v1.5",
+      baseUrl:
+        process.env.LMSTUDIO_BASE_URL ||
+        process.env.NEXT_PUBLIC_LMSTUDIO_URL ||
+        "http://127.0.0.1:1234",
+      apiToken:
+        process.env.VIDEO_WATCH_SUMMARY_MODEL_KEY ||
+        process.env.LMSTUDIO_API_TOKEN ||
+        process.env.LM_API_TOKEN ||
+        "",
+      frameModelKey:
+        process.env.VIDEO_WATCH_FRAME_MODEL_KEY ||
+        process.env.LMSTUDIO_FRAME_MODEL ||
+        "lfm-ucf-400m",
+      summaryModelKey:
+        process.env.LMSTUDIO_SUMMARY_MODEL ||
+        "google/gemma-4-e4b",
+      embeddingModelKey:
+        process.env.LM_EMBEDDING_MODEL_KEY ||
+        process.env.LMSTUDIO_EMBEDDING_MODEL ||
+        "nomic-embed-text-v1.5",
     };
 
     return {

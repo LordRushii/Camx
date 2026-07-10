@@ -2,12 +2,11 @@
 
 import Link from "next/link";
 import type React from "react";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AnalysisVideoPlayer } from "@/components/analysis/analysis-video-player";
 import { useAnalysisSession } from "@/components/analysis/video-watch-session";
-import { Badge } from "@/components/ui/badge";
 
-// ─── Pipeline step definition ────────────────────────────────────────────────
+// ─── Pipeline step definition ─────────────────────────────────────────────────
 
 type StepStatus = "complete" | "active" | "pending" | "error";
 
@@ -15,6 +14,7 @@ interface PipelineStep {
   id: string;
   icon: string;
   label: string;
+  sublabel?: string;
   stat?: string;
   status: StepStatus;
 }
@@ -45,8 +45,6 @@ function buildPipelineSteps(
     (step === "uploading" && uploadPhase === "checking_cache");
 
   const status = (step: string): StepStatus => {
-    // When in error state, mark the last active step (or the current step)
-    // as error. Steps completed before the error stay "complete".
     if (hasError) {
       if (isCurrent(step)) return "error";
       if (completed(step)) return "complete";
@@ -60,22 +58,25 @@ function buildPipelineSteps(
   return [
     {
       id: "uploading",
-      icon: "check_circle",
+      icon: "upload_file",
       label: "Pre-process Payload",
+      sublabel: "Fingerprint & cache check",
       stat: status("uploading") === "complete" ? "100%" : "--",
       status: status("uploading"),
     },
     {
       id: "extracting",
-      icon: "check_circle",
+      icon: "movie",
       label: "Frame Extraction",
+      sublabel: "ffmpeg · 1 fps sample",
       stat: status("extracting") === "complete" ? "done" : "--",
       status: status("extracting"),
     },
     {
       id: "analyzing",
-      icon: "radar",
-      label: "Object Detection (YOLOv8)",
+      icon: "camera",
+      label: "Frame Analysis",
+      sublabel: "LM Studio · lfm-ucf-400m",
       stat:
         uploadPhase === "analyzing"
           ? `${Math.round((analyzedFrames / Math.max(totalFrames, 1)) * 100)}%`
@@ -85,16 +86,10 @@ function buildPipelineSteps(
       status: status("analyzing"),
     },
     {
-      id: "face",
-      icon: "face",
-      label: "Face Recognition Track",
-      stat: "--",
-      status: "pending",
-    },
-    {
-      id: "combining",
-      icon: "memory",
-      label: "VLM Context Analysis",
+      id: "summarizing",
+      icon: "auto_awesome",
+      label: "Gemini Summary",
+      sublabel: "gemini-2.5-flash · Google AI",
       stat:
         status("summarizing") === "complete" || uploadPhase === "completed"
           ? "done"
@@ -103,122 +98,37 @@ function buildPipelineSteps(
     },
     {
       id: "report",
-      icon: "summarize",
-      label: "Post-process & Report",
-      stat: uploadPhase === "completed" ? "done" : "--",
+      icon: "chat",
+      label: "Q&A Ready",
+      sublabel: "gemini-2.5-flash · RAG",
+      stat: uploadPhase === "completed" ? "live" : "--",
       status: uploadPhase === "completed" ? "complete" : "pending",
     },
   ];
 }
 
-// ─── Face crop thumbnails (mock – face recognition not yet wired) ─────────────
-
-type FaceCrop =
-  | {
-      id: string;
-      border: string;
-      highlight: false;
-      label: string;
-      processing?: false;
-    }
-  | {
-      id: string;
-      border: string;
-      highlight: true;
-      label: string;
-      processing?: false;
-    }
-  | {
-      id: string;
-      border: string;
-      highlight?: false;
-      label: null;
-      processing: true;
-    };
-
-const FACE_CROPS: FaceCrop[] = [
-  {
-    id: "14:21:10",
-    border: "border-op-border-active",
-    label: "14:21:10",
-    highlight: false,
-  },
-  {
-    id: "UNKNOWN",
-    border: "border-op-critical",
-    label: "UID: UNKNOWN",
-    highlight: true,
-  },
-  {
-    id: "14:22:04",
-    border: "border-op-border-active",
-    label: "14:22:04",
-    highlight: false,
-  },
-  {
-    id: "PROC",
-    border: "border-op-border-active",
-    label: null,
-    processing: true,
-  },
-];
-
-// ─── Event log rows (mock + real phase label) ─────────────────────────────────
-
-const MOCK_EVENT_ROWS = [
-  {
-    time: "14:21:10.05",
-    cam: "NORTH_ENT",
-    cls: "PERSON",
-    conf: "0.94",
-    note: "Individual carrying dark briefcase, steady pace.",
-    tone: "normal",
-    active: false,
-  },
-  {
-    time: "14:21:45.22",
-    cam: "NORTH_ENT",
-    cls: "UNAUTHORIZED",
-    conf: "0.88",
-    note: "Subject loitering near restricted access door B. Face partially obscured.",
-    tone: "error",
-    active: false,
-  },
-  {
-    time: "14:22:01.00",
-    cam: "NORTH_ENT",
-    cls: "VEHICLE",
-    conf: "0.91",
-    note: "White delivery van, license plate illegible due to glare.",
-    tone: "normal",
-    active: false,
-  },
-  {
-    time: "14:22:04.15",
-    cam: "NORTH_ENT",
-    cls: "PERSON",
-    conf: "0.96",
-    note: "Multiple individuals entering frame from east corridor.",
-    tone: "normal",
-    active: true,
-  },
-] as const;
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
+// ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AnalysisPage(): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const [chatInput, setChatInput] = useState("");
+
   const {
     analyzedFrames,
     attachVideo,
     buildHref,
     clearCache,
     isCacheActionPending,
+    isReplyProcessing,
+    isVideoReady,
     job,
+    messages,
     phaseLabel,
     runFreshAnalysis,
     selectedVideoName,
     selectedVideoUrl,
+    sendMessage,
     totalFrames,
     uploadPhase,
     error,
@@ -238,6 +148,24 @@ export default function AnalysisPage(): React.JSX.Element {
   const seqLabel = job?.jobId?.slice(0, 7).toUpperCase() ?? "SEQ-094";
   const cameraLabel = job?.sourceFileName ?? "CAM-04-NORTH_ENTRANCE";
 
+  const handleChatSend = () => {
+    const trimmed = chatInput.trim();
+    if (!trimmed || isReplyProcessing || !isVideoReady) return;
+    void sendMessage(trimmed);
+    setChatInput("");
+    setTimeout(
+      () => chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }),
+      50,
+    );
+  };
+
+  const handleChatKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleChatSend();
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0 overflow-hidden p-2 gap-2">
       {/* ── Left aside: Upload + Pipeline ──────────────────────────── */}
@@ -252,6 +180,7 @@ export default function AnalysisPage(): React.JSX.Element {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            suppressHydrationWarning
             className="border border-dashed border-op-border-active hover:border-op-silver transition-colors bg-op-base p-6 flex flex-col items-center justify-center text-center gap-2 cursor-pointer h-32 rounded-sm"
           >
             <span className="material-symbols-outlined text-op-text-sec text-[28px]">
@@ -352,17 +281,19 @@ export default function AnalysisPage(): React.JSX.Element {
                 return (
                   <li key={step.id} className="flex flex-col relative">
                     {(isActive || isError) && (
-                      <div className={`absolute -left-4 top-0 bottom-0 w-1 ${isError ? "bg-op-critical" : "bg-op-silver"}`} />
+                      <div
+                        className={`absolute -left-4 top-0 bottom-0 w-1 ${isError ? "bg-op-critical" : "bg-op-silver"}`}
+                      />
                     )}
                     <div
-                      className={`flex items-center gap-3 py-2 ${rowColor} ${
+                      className={`flex items-start gap-3 py-2 ${rowColor} ${
                         isActive || isError
                           ? `bg-op-elevated px-2 -mx-2 rounded-sm border ${isError ? "border-op-critical/40" : "border-op-border"}`
                           : ""
                       }`}
                     >
                       <span
-                        className={`material-symbols-outlined text-[16px] ${iconColor} ${isActive ? "animate-pulse" : ""}`}
+                        className={`material-symbols-outlined text-[16px] mt-0.5 shrink-0 ${iconColor} ${isActive ? "animate-pulse" : ""}`}
                         style={
                           isComplete
                             ? { fontVariationSettings: '"FILL" 1' }
@@ -371,11 +302,18 @@ export default function AnalysisPage(): React.JSX.Element {
                       >
                         {isError ? "error" : step.icon}
                       </span>
-                      <span className={isActive || isError ? "font-medium" : ""}>
-                        {step.label}
-                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className={isActive || isError ? "font-medium" : ""}>
+                          {step.label}
+                        </div>
+                        {step.sublabel && (
+                          <div className="text-[9px] text-op-text-sec mt-0.5 truncate">
+                            {step.sublabel}
+                          </div>
+                        )}
+                      </div>
                       <span
-                        className={`ml-auto text-[10px] ${isError ? "text-op-critical" : isComplete ? "text-op-silver" : "text-op-text-sec"}`}
+                        className={`ml-auto text-[10px] shrink-0 ${isError ? "text-op-critical" : isComplete ? "text-op-silver" : "text-op-text-sec"}`}
                       >
                         {isError ? "ERR" : step.stat}
                       </span>
@@ -393,11 +331,26 @@ export default function AnalysisPage(): React.JSX.Element {
                 );
               })}
             </ul>
+
+            {/* Gemini badge */}
+            <div className="mt-4 pt-3 border-t border-op-border">
+              <div className="flex items-center gap-2 px-1">
+                <span className="material-symbols-outlined text-[14px] text-op-text-sec">
+                  auto_awesome
+                </span>
+                <span className="font-mono text-[9px] text-op-text-sec uppercase tracking-wider">
+                  Powered by Gemini 2.5 Flash
+                </span>
+              </div>
+              <div className="font-mono text-[9px] text-op-text-sec/60 px-1 mt-1">
+                Summary &amp; Q&amp;A via Google AI API
+              </div>
+            </div>
           </div>
         </div>
       </aside>
 
-      {/* ── Right section: Viewer + Bottom Row ─────────────────────── */}
+      {/* ── Right section: Viewer + Summary + Chat ───────────────────── */}
       <section className="flex-1 flex flex-col gap-2 min-w-0">
         {/* Error banner */}
         {error && (
@@ -406,8 +359,8 @@ export default function AnalysisPage(): React.JSX.Element {
           </div>
         )}
 
-        {/* Viewer & Scrubber – flex-[3] */}
-        <div className="flex-3 bg-op-surface border border-op-border rounded-sm relative overflow-hidden flex flex-col min-h-0">
+        {/* Viewer */}
+        <div className="flex-[2] bg-op-surface border border-op-border rounded-sm relative overflow-hidden flex flex-col min-h-0">
           <AnalysisVideoPlayer
             src={selectedVideoUrl}
             title={cameraLabel.toUpperCase()}
@@ -415,13 +368,11 @@ export default function AnalysisPage(): React.JSX.Element {
             overlays={
               selectedVideoUrl ? (
                 <>
-                  {/* PERSON bbox */}
                   <div className="absolute top-[30%] left-[45%] w-32 h-64 border border-op-silver bg-op-silver/10 pointer-events-none">
                     <div className="absolute -top-5 -left-px bg-op-silver text-op-base px-1 text-[9px] font-mono font-bold uppercase">
                       PERSON 94%
                     </div>
                   </div>
-                  {/* UNAUTHORIZED bbox */}
                   <div className="absolute top-[45%] left-[20%] w-24 h-48 border border-op-critical bg-op-critical/10 pointer-events-none">
                     <div className="absolute -top-5 -left-px bg-op-critical text-foreground px-1 text-[9px] font-mono font-bold uppercase">
                       UNAUTHORIZED 88%
@@ -432,195 +383,215 @@ export default function AnalysisPage(): React.JSX.Element {
             }
           />
 
-          {/* Summary strip */}
-          {job?.summary && (
-            <div className="border-t border-op-border bg-op-elevated px-4 py-3 shrink-0">
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-mono text-[10px] text-op-text-sec uppercase tracking-widest">
-                  Analysis Summary
-                </span>
-                <div className="flex items-center gap-3">
-                  <span className="font-mono text-[10px] text-op-text-sec">
-                    {job.cache.cacheHit
-                      ? `Cache hit (${job.cache.source})`
-                      : "Fresh run"}
-                  </span>
-                  <Link
-                    href={buildHref("/analysis/query")}
-                    className="flex items-center gap-1 font-mono text-[10px] text-op-silver hover:text-foreground transition-colors uppercase tracking-wider"
-                  >
-                    <span className="material-symbols-outlined text-[12px]">
-                      psychology
-                    </span>
-                    Query with AI
-                  </Link>
-                </div>
-              </div>
-              <p className="text-sm leading-6 text-op-silver">
-                {job.summary.summaryText}
-              </p>
+          {/* Live phase status strip */}
+          {job && job.status !== "completed" && (
+            <div className="border-t border-op-border bg-op-elevated px-4 py-2 shrink-0 flex items-center gap-3">
+              <span className="w-1.5 h-1.5 rounded-full bg-op-warning animate-pulse shrink-0" />
+              <span className="font-mono text-[10px] text-op-warning uppercase">
+                {job.status}
+              </span>
+              <span className="font-mono text-[10px] text-op-text-sec truncate">
+                {phaseLabel}
+              </span>
             </div>
           )}
-
-          {/* Header action row */}
-          <div className="absolute top-[calc(var(--player-header-h,2rem)+1px)] right-0 z-20 hidden">
-            {/* kept for potential use */}
-          </div>
         </div>
 
-        {/* Bottom row – flex-[2] */}
-        <div className="flex-2 flex gap-2 overflow-hidden min-h-0">
-          {/* Face Track Cluster */}
-          <div className="w-80 bg-op-surface border border-op-border rounded-sm flex flex-col overflow-hidden shrink-0">
-            <div className="h-8 border-b border-op-border bg-op-elevated px-3 flex items-center justify-between shrink-0">
-              <span className="font-mono text-[10px] text-foreground uppercase tracking-widest">
-                Face Track Cluster
+        {/* Bottom row: Summary + Chat ─────────────────────────────────── */}
+        <div className="flex-[3] flex gap-2 overflow-hidden min-h-0">
+
+          {/* Gemini Summary panel */}
+          <div className="w-80 shrink-0 bg-op-surface border border-op-border rounded-sm flex flex-col overflow-hidden">
+            <div className="h-9 border-b border-op-border bg-op-elevated px-3 flex items-center gap-2 shrink-0">
+              <span className="material-symbols-outlined text-[14px] text-op-text-sec">
+                auto_awesome
               </span>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-[8px] text-op-warning border-op-warning">
-                  MOCK
-                </Badge>
-                <span className="material-symbols-outlined text-[14px] text-op-text-sec">
-                  group
-                </span>
-              </div>
-            </div>
-            <div className="flex-1 p-2 grid grid-cols-3 gap-2 overflow-y-auto content-start">
-              {FACE_CROPS.map((crop) => (
-                <div
-                  key={crop.id}
-                  className={`aspect-square border ${crop.border} bg-op-base relative group`}
-                >
-                  {crop.processing === true ? (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <span className="font-mono text-[10px] text-op-text-sec">
-                        PROCESSING
-                      </span>
-                    </div>
-                  ) : crop.highlight ? (
-                    <>
-                      <div className="w-full h-full bg-op-elevated opacity-70 group-hover:opacity-100 transition-opacity" />
-                      <div className="absolute top-0 right-0 w-2 h-2 bg-op-critical rounded-full translate-x-1 -translate-y-1" />
-                      <div className="absolute bottom-0 w-full bg-op-critical text-center py-0.5 font-mono text-[8px] text-foreground font-bold">
-                        {crop.label}
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      {/* Greyed placeholder – face recognition not wired */}
-                      <div className="w-full h-full bg-op-elevated opacity-70 group-hover:opacity-100 transition-opacity" />
-                      <div className="absolute bottom-0 w-full bg-op-elevated/90 text-center py-0.5 border-t border-op-border font-mono text-[8px] text-foreground">
-                        {crop.label}
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Analysis Event Log */}
-          <div className="flex-1 bg-op-surface border border-op-border rounded-sm flex flex-col overflow-hidden">
-            <div className="h-10 border-b border-op-border bg-op-elevated px-4 flex items-center justify-between shrink-0">
               <span className="font-mono text-[10px] text-foreground uppercase tracking-widest">
-                Analysis Event Log
+                Gemini Summary
               </span>
-              <button
-                type="button"
-                className="bg-foreground text-op-base px-3 py-1.5 text-[10px] font-mono font-bold uppercase tracking-wider rounded-sm hover:bg-op-silver transition-colors flex items-center gap-1"
-              >
-                <span className="material-symbols-outlined text-[12px]">
-                  download
-                </span>
-                Export Report
-              </button>
+              <span className="ml-auto font-mono text-[9px] text-op-text-sec">
+                gemini-2.5-flash
+              </span>
             </div>
 
-            {/* Table header */}
-            <div className="grid grid-cols-12 gap-2 px-4 py-2 border-b border-op-border bg-op-surface font-mono text-[9px] text-op-text-sec uppercase tracking-wider shrink-0">
-              <div className="col-span-2">TIME</div>
-              <div className="col-span-2">CAMERA</div>
-              <div className="col-span-2">CLASS</div>
-              <div className="col-span-1 text-right">CONF</div>
-              <div className="col-span-5 pl-4">VLM NOTE</div>
-            </div>
-
-            {/* Table body */}
-            <div className="flex-1 overflow-y-auto font-mono text-[10px]">
-              {MOCK_EVENT_ROWS.map((row) => (
-                <div
-                  key={`${row.time}-${row.cls}`}
-                  className={`grid grid-cols-12 gap-2 px-4 py-2 border-b border-op-border items-center relative transition-colors ${
-                    row.tone === "error"
-                      ? "bg-op-critical/5 hover:bg-op-critical/10 text-op-critical"
-                      : row.active
-                        ? "bg-op-elevated hover:bg-op-elevated text-op-text-sec"
-                        : "hover:bg-op-elevated text-op-text-sec"
-                  }`}
-                >
-                  {row.active && (
-                    <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-foreground" />
-                  )}
-                  <div
-                    className={`col-span-2 ${row.active ? "text-foreground" : "text-op-silver"}`}
-                  >
-                    {row.time}
+            <div className="flex-1 overflow-y-auto p-3">
+              {job?.summary ? (
+                <>
+                  <p className="text-[11px] leading-5 text-op-silver">
+                    {job.summary.summaryText}
+                  </p>
+                  <div className="mt-3 pt-3 border-t border-op-border flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[11px] text-op-text-sec">
+                      info
+                    </span>
+                    <span className="font-mono text-[9px] text-op-text-sec">
+                      {job.cache.cacheHit
+                        ? `Cache hit (${job.cache.source})`
+                        : "Fresh analysis"}
+                    </span>
                   </div>
-                  <div className="col-span-2 truncate text-op-text-sec">
-                    {row.cam}
-                  </div>
-                  <div
-                    className={`col-span-2 ${row.tone === "error" ? "font-bold" : ""}`}
-                  >
-                    {row.cls}
-                  </div>
-                  <div
-                    className={`col-span-1 text-right ${row.tone === "error" ? "font-bold" : "text-op-silver"}`}
-                  >
-                    {row.conf}
-                  </div>
-                  <div
-                    className={`col-span-5 pl-4 truncate ${row.tone === "error" ? "" : "text-op-text-sec"}`}
-                  >
-                    {row.note}
-                  </div>
+                </>
+              ) : uploadPhase === "idle" ? (
+                <div className="h-full flex flex-col items-center justify-center gap-2 text-center">
+                  <span className="material-symbols-outlined text-[28px] text-op-text-sec">
+                    auto_awesome
+                  </span>
+                  <p className="font-mono text-[10px] text-op-text-sec">
+                    Upload a video to generate
+                    <br />a Gemini summary
+                  </p>
                 </div>
-              ))}
-
-              {/* Live job phase row */}
-              {job && job.status !== "completed" && (
-                <div className="grid grid-cols-12 gap-2 px-4 py-2 border-b border-op-border items-center text-op-text-sec">
-                  <div className="col-span-2 text-op-warning animate-pulse">
-                    LIVE
-                  </div>
-                  <div className="col-span-2 truncate">PIPELINE</div>
-                  <div className="col-span-2 text-op-warning">
-                    {job.status.toUpperCase()}
-                  </div>
-                  <div className="col-span-1 text-right">—</div>
-                  <div className="col-span-5 pl-4 truncate">{phaseLabel}</div>
+              ) : uploadPhase === "completed" ? (
+                <div className="flex items-center gap-2 text-op-text-sec">
+                  <span className="font-mono text-[10px]">No summary yet</span>
+                </div>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center gap-2 text-center">
+                  <span className="material-symbols-outlined text-[22px] text-op-text-sec animate-pulse">
+                    hourglass_top
+                  </span>
+                  <p className="font-mono text-[10px] text-op-text-sec">
+                    Generating summary…
+                  </p>
                 </div>
               )}
             </div>
           </div>
+
+          {/* Gemini Chat panel */}
+          <div className="flex-1 bg-op-surface border border-op-border rounded-sm flex flex-col overflow-hidden">
+            <div className="h-9 border-b border-op-border bg-op-elevated px-3 flex items-center gap-2 shrink-0">
+              <span className="material-symbols-outlined text-[14px] text-op-text-sec">
+                chat
+              </span>
+              <span className="font-mono text-[10px] text-foreground uppercase tracking-widest">
+                AI Query
+              </span>
+              <span className="ml-auto font-mono text-[9px] text-op-text-sec">
+                gemini-2.5-flash
+              </span>
+              {messages.length > 0 && (
+                <Link
+                  href={buildHref("/analysis/query")}
+                  className="flex items-center gap-1 font-mono text-[9px] text-op-silver hover:text-foreground transition-colors uppercase tracking-wider ml-2"
+                >
+                  <span className="material-symbols-outlined text-[10px]">
+                    open_in_full
+                  </span>
+                  Expand
+                </Link>
+              )}
+            </div>
+
+            {/* Message list */}
+            <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+              {messages.length === 0 && !isReplyProcessing ? (
+                <div className="h-full flex flex-col items-center justify-center gap-2 text-center">
+                  <span className="material-symbols-outlined text-[28px] text-op-text-sec">
+                    psychology
+                  </span>
+                  <p className="font-mono text-[10px] text-op-text-sec">
+                    {isVideoReady
+                      ? "Ask Gemini about this footage"
+                      : "Analysis needed before Q&A"}
+                  </p>
+                  {isVideoReady && (
+                    <div className="flex flex-wrap gap-1 justify-center mt-1">
+                      {[
+                        "What happened?",
+                        "Any suspicious activity?",
+                        "Who entered the frame?",
+                      ].map((q) => (
+                        <button
+                          key={q}
+                          type="button"
+                          onClick={() => {
+                            void sendMessage(q);
+                          }}
+                          className="font-mono text-[9px] text-op-text-sec border border-op-border rounded-sm px-2 py-1 hover:border-op-silver hover:text-foreground transition-colors"
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {messages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      {msg.role === "assistant" && (
+                        <span className="material-symbols-outlined text-[12px] text-op-text-sec mt-1 mr-1.5 shrink-0">
+                          auto_awesome
+                        </span>
+                      )}
+                      <div
+                        className={`max-w-[80%] px-2.5 py-1.5 rounded-sm text-[11px] leading-5 font-sans ${
+                          msg.role === "user"
+                            ? "bg-op-elevated border border-op-border-active text-foreground"
+                            : "text-op-silver"
+                        }`}
+                      >
+                        {msg.content}
+                      </div>
+                    </div>
+                  ))}
+                  {isReplyProcessing && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[12px] text-op-text-sec">
+                        auto_awesome
+                      </span>
+                      <div className="flex gap-1">
+                        {[0, 1, 2].map((i) => (
+                          <span
+                            key={i}
+                            className="w-1 h-1 rounded-full bg-op-text-sec animate-pulse"
+                            style={{ animationDelay: `${i * 150}ms` }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatBottomRef} />
+                </>
+              )}
+            </div>
+
+            {/* Input row */}
+            <div className="border-t border-op-border p-2 shrink-0 flex gap-2">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={handleChatKey}
+                disabled={!isVideoReady || isReplyProcessing}
+                suppressHydrationWarning
+                placeholder={
+                  isVideoReady
+                    ? "Ask about this footage…"
+                    : "Upload & analyse a video first…"
+                }
+                className="flex-1 bg-op-base border border-op-border rounded-sm px-3 py-1.5 font-mono text-[11px] text-foreground placeholder:text-op-text-sec focus:outline-none focus:border-op-silver disabled:opacity-40"
+              />
+              <button
+                type="button"
+                onClick={handleChatSend}
+                disabled={
+                  !isVideoReady || isReplyProcessing || !chatInput.trim()
+                }
+                className="bg-op-elevated border border-op-border rounded-sm px-3 flex items-center gap-1 font-mono text-[10px] text-op-silver hover:text-foreground hover:border-op-silver transition-colors disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-[14px]">
+                  send
+                </span>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
-
-      {/* Open AI Query CTA — visible when analysis is done */}
-      {uploadPhase === "completed" && (
-        <Link
-          href={buildHref("/analysis/query")}
-          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-op-silver text-op-base px-4 py-2.5 font-mono text-xs font-bold uppercase tracking-wider hover:bg-foreground transition-colors duration-75 shadow-lg"
-        >
-          <span className="material-symbols-outlined text-[16px]">
-            psychology
-          </span>
-          Query with AI
-          <span className="material-symbols-outlined text-[14px]">
-            arrow_forward
-          </span>
-        </Link>
-      )}
 
       {/* Hidden file input */}
       <input
