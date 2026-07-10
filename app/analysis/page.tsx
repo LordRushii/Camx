@@ -88,8 +88,8 @@ function buildPipelineSteps(
     {
       id: "summarizing",
       icon: "auto_awesome",
-      label: "Gemini Summary",
-      sublabel: "gemini-2.5-flash · Google AI",
+      label: "Groq Summary",
+      sublabel: "llama-3.3-70b · Groq",
       stat:
         status("summarizing") === "complete" || uploadPhase === "completed"
           ? "done"
@@ -100,7 +100,7 @@ function buildPipelineSteps(
       id: "report",
       icon: "chat",
       label: "Q&A Ready",
-      sublabel: "gemini-2.5-flash · RAG",
+      sublabel: "llama-3.3-70b · RAG",
       stat: uploadPhase === "completed" ? "live" : "--",
       status: uploadPhase === "completed" ? "complete" : "pending",
     },
@@ -407,10 +407,10 @@ export default function AnalysisPage(): React.JSX.Element {
                 auto_awesome
               </span>
               <span className="font-mono text-[10px] text-foreground uppercase tracking-widest">
-                Gemini Summary
+                Groq Summary
               </span>
               <span className="ml-auto font-mono text-[9px] text-op-text-sec">
-                gemini-2.5-flash
+                {job?.summary?.modelKey || "groq"}
               </span>
             </div>
 
@@ -438,7 +438,7 @@ export default function AnalysisPage(): React.JSX.Element {
                   </span>
                   <p className="font-mono text-[10px] text-op-text-sec">
                     Upload a video to generate
-                    <br />a Gemini summary
+                    <br />a Groq summary
                   </p>
                 </div>
               ) : uploadPhase === "completed" ? (
@@ -468,7 +468,7 @@ export default function AnalysisPage(): React.JSX.Element {
                 AI Query
               </span>
               <span className="ml-auto font-mono text-[9px] text-op-text-sec">
-                gemini-2.5-flash
+                {job?.summary?.modelKey || "groq"}
               </span>
               {messages.length > 0 && (
                 <Link

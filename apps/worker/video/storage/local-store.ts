@@ -29,6 +29,7 @@ import { readJsonFile, writeJsonFile } from "../utils/json";
 import {
   frameArtifactPath,
   frameArtifactsDirPath,
+  framesDirPath,
   jobDir,
   manifestFilePath,
   retrievalChunksFilePath,
@@ -435,5 +436,35 @@ export class LocalVideoAnalysisStore implements VideoAnalysisStore {
 
   async clearJob(fingerprint: string): Promise<void> {
     await fs.rm(jobDir(fingerprint), { recursive: true, force: true });
+  }
+
+  async deleteSourceVideo(
+    fingerprint: string,
+    sourceFileName: string,
+  ): Promise<void> {
+    const targetPath = sourceVideoPath(fingerprint, sourceFileName);
+    await fs.rm(targetPath, { force: true });
+  }
+
+  async cleanupTempFiles(fingerprint: string): Promise<void> {
+    const dir = jobDir(fingerprint);
+    try {
+      const files = await fs.readdir(dir).catch(() => [] as string[]);
+      for (const file of files) {
+        if (file.startsWith("source.")) {
+          await fs.rm(path.join(dir, file), { force: true });
+        }
+      }
+    } catch {
+      // Ignore if directory doesn't exist
+    }
+
+    await fs.rm(manifestFilePath(fingerprint), { force: true }).catch(() => {});
+    await fs
+      .rm(framesDirPath(fingerprint), { recursive: true, force: true })
+      .catch(() => {});
+    await fs
+      .rm(frameArtifactsDirPath(fingerprint), { recursive: true, force: true })
+      .catch(() => {});
   }
 }

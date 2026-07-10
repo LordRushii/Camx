@@ -19,6 +19,10 @@ const MODELS = [
   {
     name: 'yolo11x.onnx',
     url: 'https://github.com/rajofearth/camx2/raw/v2/public/models/yolo11x.onnx'
+  },
+  {
+    name: 'weapon-yolov8.onnx',
+    url: 'https://huggingface.co/Hadi959/weapon-detection-yolov8/resolve/main/best.onnx'
   }
 ];
 

@@ -57,72 +57,67 @@ function renderGraphMatchList(matches: readonly GraphMatch[]): string {
   return matches.map(renderGraphMatch).join("\n") || "No graph matches.";
 }
 
-// ─── Gemini API helper ─────────────────────────────────────────────────────────
+// ─── Groq API helper ──────────────────────────────────────────────────────────
 
-interface GeminiMessage {
-  role: "user" | "model";
-  parts: { text: string }[];
+interface GroqMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
 }
 
-async function queryGemini(options: {
+async function queryGroq(options: {
   apiKey: string;
-  systemInstruction?: string;
-  contents: GeminiMessage[];
+  model: string;
+  messages: GroqMessage[];
   temperature?: number;
   maxTokens?: number;
 }): Promise<string> {
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${options.apiKey}`,
+    "https://api.groq.com/openai/v1/chat/completions",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${options.apiKey}`,
+      },
       body: JSON.stringify({
-        contents: options.contents,
-        ...(options.systemInstruction
-          ? {
-              systemInstruction: {
-                parts: [{ text: options.systemInstruction }],
-              },
-            }
-          : {}),
-        generationConfig: {
-          temperature: options.temperature ?? 0.1,
-          maxOutputTokens: options.maxTokens ?? 1000,
-        },
+        model: options.model,
+        messages: options.messages,
+        temperature: options.temperature ?? 0.1,
+        max_tokens: options.maxTokens ?? 1000,
       }),
     },
   );
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Gemini API error (HTTP ${response.status}): ${errText}`);
+    throw new Error(`Groq API error (HTTP ${response.status}): ${errText}`);
   }
 
   const resJson = (await response.json()) as {
-    candidates?: {
-      content?: {
-        parts?: { text?: string }[];
-      };
-    }[];
+    choices?: { message?: { content?: string | null } }[];
   };
 
-  const text = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
+  const text = resJson.choices?.[0]?.message?.content;
   if (!text) {
     throw new Error(
-      `Gemini returned an empty response: ${JSON.stringify(resJson)}`,
+      `Groq returned an empty response: ${JSON.stringify(resJson)}`,
     );
   }
   return text;
 }
 
-function requireGeminiKey(operation: string): string {
-  const key = process.env.VIDEO_WATCH_SUMMARY_MODEL_KEY;
+function requireGroqKey(operation: string): string {
+  const key = process.env.GROQ_API_KEY || process.env.VIDEO_WATCH_SUMMARY_MODEL_KEY;
   if (!key || key.trim() === "") {
     throw new Error(
-      `VIDEO_WATCH_SUMMARY_MODEL_KEY is not set. ${operation} requires the Gemini API key.`,
+      `GROQ_API_KEY is not set. ${operation} requires the Groq API key.`,
     );
   }
   return key;
+}
+
+function resolveGroqModel(): string {
+  return process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
 }
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -240,31 +235,32 @@ export class LmStudioVideoAnalysisProvider implements VideoAnalysisProvider {
     return normalized.map((entry) => entry.embedding);
   }
 
-  // ── Video Summary — Gemini 2.5 Flash ────────────────────────────────────
+  // ── Video Summary — Groq ───────────────────────────────────────────────
 
   async summarizeTimeline(
     timeline: readonly VideoAnalysisTimelineEntry[],
   ): Promise<VideoAnalysisSummaryArtifact> {
-    const apiKey = requireGeminiKey("Video summary");
+    const apiKey = requireGroqKey("Video summary");
     const timelineText = buildTimelineText(timeline);
+    const model = resolveGroqModel();
 
-    const summaryText = await queryGemini({
+    const summaryText = await queryGroq({
       apiKey,
-      systemInstruction:
-        "You summarize analyzed CCTV footage into a practical operator brief. Be chronological, compact, and grounded in the supplied timeline only.",
-      contents: [
+      model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You summarize analyzed CCTV footage into a practical security operator brief. Be chronological, compact, and grounded in the supplied timeline only. Highlight people, vehicles, weapons, and threat-relevant events.",
+        },
         {
           role: "user",
-          parts: [
-            {
-              text: [
-                "Write 2 to 4 short paragraphs.",
-                "Focus on what changed, when it changed, and what remains uncertain.",
-                "",
-                timelineText || "No timeline entries available.",
-              ].join("\n"),
-            },
-          ],
+          content: [
+            "Write 2 to 4 short paragraphs.",
+            "Focus on what changed, when it changed, and what remains uncertain.",
+            "",
+            timelineText || "No timeline entries available.",
+          ].join("\n"),
         },
       ],
       temperature: 0.15,
@@ -274,12 +270,12 @@ export class LmStudioVideoAnalysisProvider implements VideoAnalysisProvider {
     return {
       timelineText,
       summaryText,
-      modelKey: "gemini-2.5-flash",
+      modelKey: model,
       rawText: summaryText,
     };
   }
 
-  // ── Q&A Context Summary — Gemini 2.5 Flash ──────────────────────────────
+  // ── Q&A Context Summary — Groq ──────────────────────────────────────────
 
   async summarizeQueryContext(input: {
     readonly question: string;
@@ -290,7 +286,8 @@ export class LmStudioVideoAnalysisProvider implements VideoAnalysisProvider {
     readonly conversation: readonly VideoAnalysisChatMessage[];
     readonly insufficientEvidence: boolean;
   }): Promise<{ readonly summary: string; readonly modelKey: string }> {
-    const apiKey = requireGeminiKey("Q&A context summary");
+    const apiKey = requireGroqKey("Q&A context summary");
+    const model = resolveGroqModel();
 
     const conversationBlock =
       input.conversation.length > 0
@@ -300,58 +297,59 @@ export class LmStudioVideoAnalysisProvider implements VideoAnalysisProvider {
             .join("\n")
         : "No prior conversation context.";
 
-    const summary = await queryGemini({
+    const summary = await queryGroq({
       apiKey,
-      systemInstruction: [
-        "You prepare compact retrieval summaries for a CCTV question-answering agent.",
-        "Use only the supplied evidence.",
-        "Respect the requested question and time range.",
-        "If evidence is weak, say so plainly.",
-        "Return plain text only.",
-      ].join(" "),
-      contents: [
+      model,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You prepare compact retrieval summaries for a CCTV question-answering agent.",
+            "Use only the supplied evidence.",
+            "Respect the requested question and time range.",
+            "If evidence is weak, say so plainly.",
+            "Return plain text only.",
+          ].join(" "),
+        },
         {
           role: "user",
-          parts: [
-            {
-              text: [
-                `Question: ${input.question}`,
-                renderResolvedTimeRange(input.resolvedTimeRange),
-                `Insufficient evidence flag: ${input.insufficientEvidence ? "yes" : "no"}`,
-                "",
-                "Global video summary:",
-                input.summary.summaryText,
-                "",
-                "Relevant evidence:",
-                renderEvidenceList(input.evidence),
-                "",
-                "Graph matches:",
-                renderGraphMatchList(input.graphMatches),
-                "",
-                "Recent conversation:",
-                conversationBlock,
-                "",
-                "Write a 1-2 paragraph context summary for another agent. Include timestamps when supported.",
-              ].join("\n"),
-            },
-          ],
+          content: [
+            `Question: ${input.question}`,
+            renderResolvedTimeRange(input.resolvedTimeRange),
+            `Insufficient evidence flag: ${input.insufficientEvidence ? "yes" : "no"}`,
+            "",
+            "Global video summary:",
+            input.summary.summaryText,
+            "",
+            "Relevant evidence:",
+            renderEvidenceList(input.evidence),
+            "",
+            "Graph matches:",
+            renderGraphMatchList(input.graphMatches),
+            "",
+            "Recent conversation:",
+            conversationBlock,
+            "",
+            "Write a 1-2 paragraph context summary for another agent. Include timestamps when supported.",
+          ].join("\n"),
         },
       ],
       temperature: 0.1,
       maxTokens: 700,
     });
 
-    return { summary, modelKey: "gemini-2.5-flash" };
+    return { summary, modelKey: model };
   }
 
-  // ── Q&A Answer — Gemini 2.5 Flash ───────────────────────────────────────
+  // ── Q&A Answer — Groq ───────────────────────────────────────────────────
 
   async answerQuestion(input: {
     readonly question: string;
     readonly messages: readonly VideoAnalysisChatMessage[];
     readonly queryContext: VideoQueryContextResult;
   }): Promise<{ readonly answer: string; readonly modelKey: string }> {
-    const apiKey = requireGeminiKey("Q&A");
+    const apiKey = requireGroqKey("Q&A");
+    const model = resolveGroqModel();
 
     const normalizedMessages = input.messages.map((m) =>
       chatMessageSchema.parse(m),
@@ -361,24 +359,28 @@ export class LmStudioVideoAnalysisProvider implements VideoAnalysisProvider {
       "Answer questions about analyzed CCTV footage using only the supplied retrieved context.",
       "Use timestamps when supported.",
       "If the evidence is insufficient, say so clearly.",
+      "Prioritize security-relevant facts: people, weapons, vehicles, and threats.",
       "",
       buildQueryContextBlock(input.queryContext),
     ].join("\n");
 
-    const contents: GeminiMessage[] = normalizedMessages.map((msg) => ({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.content }],
-    }));
-    contents.push({ role: "user", parts: [{ text: input.question }] });
+    const messages: GroqMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...normalizedMessages.map((msg) => ({
+        role: msg.role === "assistant" ? "assistant" as const : "user" as const,
+        content: msg.content,
+      })),
+      { role: "user", content: input.question },
+    ];
 
-    const answer = await queryGemini({
+    const answer = await queryGroq({
       apiKey,
-      systemInstruction: systemPrompt,
-      contents,
+      model,
+      messages,
       temperature: 0.1,
       maxTokens: 1000,
     });
 
-    return { answer, modelKey: "gemini-2.5-flash" };
+    return { answer, modelKey: model };
   }
 }

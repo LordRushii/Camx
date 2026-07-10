@@ -17,7 +17,7 @@ export interface ProviderFrameInput {
 }
 
 export interface VideoAnalysisProvider {
-  readonly kind: "lmstudio";
+  readonly kind: "lmstudio" | "xai";
   embedTexts(inputs: readonly string[]): Promise<readonly number[][]>;
   analyzeFrame(
     input: ProviderFrameInput,

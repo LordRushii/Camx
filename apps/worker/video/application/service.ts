@@ -262,6 +262,11 @@ class VideoAnalysisApplicationService {
           store: this.store,
         }));
 
+      // Clean up the source video file as it's no longer needed for analysis
+      await this.store.deleteSourceVideo(job.fingerprint, job.sourceFileName).catch((err) => {
+        console.warn(`[video-analysis] Failed to delete source video for ${job.fingerprint}:`, err);
+      });
+
       job = await this.persist({
         ...job,
         status: "analyzing",
@@ -329,6 +334,11 @@ class VideoAnalysisApplicationService {
         summary,
         updatedAt: new Date().toISOString(),
       });
+
+      // Clean up other temp files (frames directory, frame-artifacts directory, manifest.json)
+      await this.store.cleanupTempFiles(job.fingerprint).catch((err) => {
+        console.warn(`[video-analysis] Failed to clean up temp files for ${job.fingerprint}:`, err);
+      });
     } catch (error) {
       const failed = await this.loadById(jobId);
       if (!failed) return;
@@ -357,6 +367,11 @@ class VideoAnalysisApplicationService {
         },
         updatedAt: new Date().toISOString(),
         error: errorMessage,
+      });
+
+      // Clean up on error too to prevent leaks
+      await this.store.cleanupTempFiles(failed.fingerprint).catch((err) => {
+        console.warn(`[video-analysis] Failed to clean up temp files on error for ${failed.fingerprint}:`, err);
       });
     }
   }

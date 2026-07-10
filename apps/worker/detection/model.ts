@@ -7,7 +7,7 @@ import { ModelError } from "./errors.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-export type DetectionModel = "rfdetr" | "yolo" | "security";
+export type DetectionModel = "rfdetr" | "yolo" | "security" | "weapon";
 
 // Model configuration info
 const MODEL_CONFIG = {
@@ -31,6 +31,14 @@ const MODEL_CONFIG = {
       output: "output0",
     },
     logLabel: "SECURITY",
+  },
+  weapon: {
+    fileName: "weapon-yolov8.onnx",
+    inputName: "images",
+    outputNames: {
+      output: "output0",
+    },
+    logLabel: "WEAPON",
   },
 } as const;
 
@@ -110,7 +118,7 @@ export function getOutputNames(
 };
 export function getOutputNames(
   session: ort.InferenceSession,
-  modelType: "yolo" | "security",
+  modelType: "yolo" | "security" | "weapon",
 ): {
   readonly output: string;
 };

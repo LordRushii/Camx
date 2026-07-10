@@ -21,6 +21,7 @@ const MODEL_DIMENSIONS: Record<DetectionModel, { width: number; height: number }
   rfdetr: { width: 312, height: 312 },
   yolo: { width: 640, height: 640 },
   security: { width: 640, height: 640 },
+  weapon: { width: 640, height: 640 },
 };
 
 export async function preprocess(

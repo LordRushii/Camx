@@ -5,9 +5,13 @@ import ffmpegStatic from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 import { makeSquareAndCompressServer } from "@/app/lib/image-utils-server";
 import { framesDirPath } from "../storage/paths";
-import type { VideoAnalysisStore, VideoFrameManifest } from "../storage/types";
-import { mapWithConcurrency } from "../utils/concurrency";
+import type { VideoAnalysisStore, VideoFrameManifest } from "../storage/types.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { toTimestampLabel } from "../utils/time";
+import {
+  scoreFrameForSecurityAndWeapon,
+  thinSelectedIndices,
+} from "./yolo-frame-selector.js";
 
 const SAMPLE_FPS = 1;
 const FRAME_TARGET_SIZE = 160;
@@ -141,11 +145,64 @@ export async function extractVideoFrames(input: {
     .filter((entry) => entry.startsWith("raw-") && entry.endsWith(".jpg"))
     .sort();
 
-  const frames = await mapWithConcurrency(
+  // 1. Run local YOLO models (general security + weapon) to score each frame concurrently
+  const candidates: {
+    index: number;
+    score: number;
+    signature: string;
+    entry: string;
+  }[] = [];
+
+  const scoredResults = await mapWithConcurrency(
     rawFrames,
-    6,
+    3, // Concurrency of 3 to balance CPU load during simultaneous models
     async (entry, index) => {
       const rawPath = path.join(frameDir, entry);
+      const rawBuffer = await fs.readFile(rawPath);
+      const result = await scoreFrameForSecurityAndWeapon(rawBuffer);
+
+      if (result.keep) {
+        return {
+          index,
+          score: result.score,
+          signature: result.signature,
+          entry,
+        };
+      }
+      return null;
+    }
+  );
+
+  for (const c of scoredResults) {
+    if (c) candidates.push(c);
+  }
+
+  // 2. Thin selected candidate frame indices (limit to max 15 frames)
+  const keptIndices = thinSelectedIndices({
+    candidates,
+    minGapMs: 3000,
+    sampleFps: SAMPLE_FPS,
+    maxFrames: 15,
+  });
+
+  const keptIndicesSet = new Set(keptIndices);
+
+  // 3. Fallback if no frames matched: keep first, middle, last to avoid empty timeline
+  if (keptIndicesSet.size === 0 && rawFrames.length > 0) {
+    const midIdx = Math.floor(rawFrames.length / 2);
+    const lastIdx = rawFrames.length - 1;
+    keptIndicesSet.add(0);
+    keptIndicesSet.add(midIdx);
+    keptIndicesSet.add(lastIdx);
+  }
+
+  // 4. Process and upload the selected frames, delete others
+  const frames = [];
+  for (let i = 0; i < rawFrames.length; i++) {
+    const entry = rawFrames[i]!;
+    const rawPath = path.join(frameDir, entry);
+
+    if (keptIndicesSet.has(i)) {
       const rawBuffer = await fs.readFile(rawPath);
       const processed = await makeSquareAndCompressServer(rawBuffer, {
         quality: FRAME_COMPRESSION_QUALITY,
@@ -154,18 +211,20 @@ export async function extractVideoFrames(input: {
         output: "png",
       });
       const uploadRes = await input.store.uploadFrame(processed);
-      await fs.rm(rawPath, { force: true });
-      const timestampMs = index * 1000;
-      return {
-        frameIndex: index,
+      const timestampMs = i * 1000;
+      frames.push({
+        frameIndex: i,
         timestampMs,
         timestampLabel: toTimestampLabel(timestampMs),
         imagePath: uploadRes.url,
         width,
         height,
-      };
-    },
-  );
+      });
+    }
+
+    // Clean up raw image file from disk
+    await fs.rm(rawPath, { force: true });
+  }
 
   const manifest: VideoFrameManifest = {
     fingerprint: input.fingerprint,

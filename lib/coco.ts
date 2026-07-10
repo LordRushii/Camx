@@ -1,4 +1,4 @@
-export type DetectionModel = "rfdetr" | "yolo" | "security";
+export type DetectionModel = "rfdetr" | "yolo" | "security" | "weapon";
 
 export const RF_DETR_COCO_CLASSES = [
   "__background__",
@@ -179,13 +179,19 @@ export const YOLO_COCO_CLASSES = [
 
 export type CocoClassName =
   | (typeof RF_DETR_COCO_CLASSES)[number]
-  | (typeof YOLO_COCO_CLASSES)[number];
+  | (typeof YOLO_COCO_CLASSES)[number]
+  | "handgun"
+  | "knife"
+  | string;
 
 export function cocoClassName(
   classId: number,
   model: DetectionModel = "rfdetr",
 ): string {
-  // Both yolo and security models use YOLO COCO classes mapping
+  if (model === "weapon") {
+    // specialized weapon model classes (0: handgun, 1: knife)
+    return classId === 0 ? "handgun" : classId === 1 ? "knife" : `weapon_${classId}`;
+  }
   const classes = model === "rfdetr" ? RF_DETR_COCO_CLASSES : YOLO_COCO_CLASSES;
   return classes[classId] ?? `class_${classId}`;
 }

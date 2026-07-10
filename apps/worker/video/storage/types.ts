@@ -88,4 +88,9 @@ export interface VideoAnalysisStore {
     fingerprint: string,
   ): Promise<VideoAnalysisGraphArtifact | null>;
   clearJob(fingerprint: string): Promise<void>;
+  deleteSourceVideo(
+    fingerprint: string,
+    sourceFileName: string,
+  ): Promise<void>;
+  cleanupTempFiles(fingerprint: string): Promise<void>;
 }
