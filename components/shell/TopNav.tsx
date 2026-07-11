@@ -41,7 +41,7 @@ export function TopNav() {
         <div className="flex items-center gap-6">
           <Link href="/" className="flex items-center gap-2">
             <span className="font-heading text-lg font-bold tracking-tight text-primary bg-clip-text">
-              CAMX2
+              Camx
             </span>
           </Link>
           <nav className="hidden md:flex items-center gap-1">
