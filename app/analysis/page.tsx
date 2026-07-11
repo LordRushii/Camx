@@ -88,8 +88,8 @@ function buildPipelineSteps(
     {
       id: "summarizing",
       icon: "auto_awesome",
-      label: "Groq Summary",
-      sublabel: "llama-3.3-70b · Groq",
+      label: "Nemotron Summary",
+      sublabel: "Nemotron · NVIDIA NIM",
       stat:
         status("summarizing") === "complete" || uploadPhase === "completed"
           ? "done"
@@ -100,7 +100,7 @@ function buildPipelineSteps(
       id: "report",
       icon: "chat",
       label: "Q&A Ready",
-      sublabel: "llama-3.3-70b · RAG",
+      sublabel: "Gemma 4 · RAG",
       stat: uploadPhase === "completed" ? "live" : "--",
       status: uploadPhase === "completed" ? "complete" : "pending",
     },
@@ -332,18 +332,18 @@ export default function AnalysisPage(): React.JSX.Element {
               })}
             </ul>
 
-            {/* Gemini badge */}
+            {/* Gemma badge */}
             <div className="mt-4 pt-3 border-t border-op-border">
               <div className="flex items-center gap-2 px-1">
                 <span className="material-symbols-outlined text-[14px] text-op-text-sec">
                   auto_awesome
                 </span>
                 <span className="font-mono text-[9px] text-op-text-sec uppercase tracking-wider">
-                  Powered by Gemini 2.5 Flash
+                  Powered by Nemotron (30B)
                 </span>
               </div>
               <div className="font-mono text-[9px] text-op-text-sec/60 px-1 mt-1">
-                Summary &amp; Q&amp;A via Google AI API
+                Summary &amp; Q&amp;A via NVIDIA NIM API
               </div>
             </div>
           </div>
@@ -400,17 +400,17 @@ export default function AnalysisPage(): React.JSX.Element {
         {/* Bottom row: Summary + Chat ─────────────────────────────────── */}
         <div className="flex-[3] flex gap-2 overflow-hidden min-h-0">
 
-          {/* Gemini Summary panel */}
+          {/* Gemma Summary panel */}
           <div className="w-80 shrink-0 bg-op-surface border border-op-border rounded-sm flex flex-col overflow-hidden">
             <div className="h-9 border-b border-op-border bg-op-elevated px-3 flex items-center gap-2 shrink-0">
               <span className="material-symbols-outlined text-[14px] text-op-text-sec">
                 auto_awesome
               </span>
               <span className="font-mono text-[10px] text-foreground uppercase tracking-widest">
-                Groq Summary
+                Gemma Summary
               </span>
               <span className="ml-auto font-mono text-[9px] text-op-text-sec">
-                {job?.summary?.modelKey || "groq"}
+                {job?.summary?.modelKey || "gemma"}
               </span>
             </div>
 
@@ -438,7 +438,7 @@ export default function AnalysisPage(): React.JSX.Element {
                   </span>
                   <p className="font-mono text-[10px] text-op-text-sec">
                     Upload a video to generate
-                    <br />a Groq summary
+                    <br />a Gemma summary
                   </p>
                 </div>
               ) : uploadPhase === "completed" ? (
@@ -458,7 +458,7 @@ export default function AnalysisPage(): React.JSX.Element {
             </div>
           </div>
 
-          {/* Gemini Chat panel */}
+          {/* Gemma Chat panel */}
           <div className="flex-1 bg-op-surface border border-op-border rounded-sm flex flex-col overflow-hidden">
             <div className="h-9 border-b border-op-border bg-op-elevated px-3 flex items-center gap-2 shrink-0">
               <span className="material-symbols-outlined text-[14px] text-op-text-sec">
@@ -468,7 +468,7 @@ export default function AnalysisPage(): React.JSX.Element {
                 AI Query
               </span>
               <span className="ml-auto font-mono text-[9px] text-op-text-sec">
-                {job?.summary?.modelKey || "groq"}
+                {job?.summary?.modelKey || "gemma"}
               </span>
               {messages.length > 0 && (
                 <Link
@@ -492,7 +492,7 @@ export default function AnalysisPage(): React.JSX.Element {
                   </span>
                   <p className="font-mono text-[10px] text-op-text-sec">
                     {isVideoReady
-                      ? "Ask Gemini about this footage"
+                      ? "Ask Gemma about this footage"
                       : "Analysis needed before Q&A"}
                   </p>
                   {isVideoReady && (

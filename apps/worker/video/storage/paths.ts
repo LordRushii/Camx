@@ -1,9 +1,9 @@
+import os from "node:os";
 import path from "node:path";
 
 export const VIDEO_ANALYSIS_ROOT = path.join(
-  process.cwd(),
-  "tmp",
-  "video-analysis",
+  os.tmpdir(),
+  "camx-video-analysis",
 );
 
 export function jobDir(fingerprint: string): string {

@@ -192,6 +192,10 @@ export async function scoreFrameForSecurityAndWeapon(
           classId: d.class,
           className,
           confidence: d.confidence,
+          x1: d.x1,
+          y1: d.y1,
+          x2: d.x2,
+          y2: d.y2,
         };
       })
       .filter((d) => SECURITY_CLASS_NAMES.has(d.className));
@@ -206,6 +210,41 @@ export async function scoreFrameForSecurityAndWeapon(
           confidence: d.confidence,
         };
       });
+
+    // Check for potential physical interaction / fight gestures (2+ people close or overlapping)
+    let hasFightGesture = false;
+    const people = securityDetections.filter(d => d.className === "person");
+    if (people.length >= 2) {
+      const width = securityResult?.frame.width ?? 640;
+      const height = securityResult?.frame.height ?? 640;
+      const maxDim = Math.max(width, height) || 1;
+
+      for (let i = 0; i < people.length; i++) {
+        for (let j = i + 1; j < people.length; j++) {
+          const pA = people[i]!;
+          const pB = people[j]!;
+
+          // Check direct bounding box overlap
+          const xOverlap = Math.max(0, Math.min(pA.x2, pB.x2) - Math.max(pA.x1, pB.x1));
+          const yOverlap = Math.max(0, Math.min(pA.y2, pB.y2) - Math.max(pA.y1, pB.y1));
+          const hasOverlap = xOverlap > 0 && yOverlap > 0;
+
+          // Check center-to-center distance
+          const cxA = (pA.x1 + pA.x2) / 2;
+          const cyA = (pA.y1 + pA.y2) / 2;
+          const cxB = (pB.x1 + pB.x2) / 2;
+          const cyB = (pB.y1 + pB.y2) / 2;
+          const dist = Math.sqrt((cxA - cxB) ** 2 + (cyA - cyB) ** 2);
+          const relativeDist = dist / maxDim;
+
+          if (hasOverlap || relativeDist < 0.3) {
+            hasFightGesture = true;
+            break;
+          }
+        }
+        if (hasFightGesture) break;
+      }
+    }
 
     const keepSecurity = securityDetections.length > 0;
     const keepWeapon = weaponDetections.length > 0;
@@ -223,6 +262,9 @@ export async function scoreFrameForSecurityAndWeapon(
       const priority = CLASS_PRIORITY[d.className] ?? 10;
       securityScore += priority * d.confidence;
     }
+    if (hasFightGesture) {
+      securityScore += 80;
+    }
 
     let weaponScore = 0;
     for (const d of weaponDetections) {
@@ -230,10 +272,14 @@ export async function scoreFrameForSecurityAndWeapon(
     }
 
     const score = Math.max(securityScore, weaponScore);
-    const signature = [
+    const signatureParts = [
       ...securityDetections.map((d) => d.className),
       ...weaponDetections.map((d) => d.className),
-    ].join("|");
+    ];
+    if (hasFightGesture) {
+      signatureParts.push("fight_gesture");
+    }
+    const signature = signatureParts.join("|");
 
     return {
       keep: true,
