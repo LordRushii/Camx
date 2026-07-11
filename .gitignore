@@ -37,6 +37,7 @@ pnpm-debug.log*
 next-env.d.ts
 
 *.md
+!README.md
 .AGENTS
 .claude
 
