@@ -45,6 +45,39 @@ const MODEL_CONFIG = {
 const sessions = new Map<DetectionModel, ort.InferenceSession>();
 const initializedModels = new Set<DetectionModel>();
 
+/**
+ * Ordered list of execution providers to attempt, each tried ALONE so we can
+ * tell which one actually initialized (ORT always appends CPU internally for
+ * ops a GPU EP can't handle, so a GPU-only request is safe).
+ *
+ * NOTE: `onnxruntime-node` does NOT support the "webgpu" provider — that only
+ * exists in `onnxruntime-web` (browser). In Node the GPU accelerators are:
+ *   - "dml"  DirectML: any DirectX-12 GPU on Windows (NVIDIA/AMD/Intel). The
+ *            npm build bundles this on win32/x64 — it drives an RTX card fine.
+ *   - "cuda" NVIDIA only, and only if this ORT build ships the CUDA provider
+ *            AND the CUDA/cuDNN toolkit is installed. The stock npm build for
+ *            Windows does NOT include it, so "cuda" will fall through to CPU.
+ * CPU is always the final fallback.
+ *
+ * Controlled by env `ONNX_EP`: "auto" (default), "dml", "cuda", or "cpu".
+ */
+function candidateExecutionProviders(): string[] {
+  const pref = (process.env.ONNX_EP || "auto").trim().toLowerCase();
+  switch (pref) {
+    case "cpu":
+      return ["cpu"];
+    case "dml":
+    case "directml":
+      return ["dml", "cpu"];
+    case "cuda":
+      return ["cuda", "cpu"];
+    case "auto":
+    default:
+      // Prefer DirectML on Windows (bundled, no extra install), else CUDA.
+      return process.platform === "win32" ? ["dml", "cpu"] : ["cuda", "cpu"];
+  }
+}
+
 function findModelPath(fileName: string): string {
   const possiblePaths = [
     join(process.cwd(), "public", "models", fileName),
@@ -72,14 +105,45 @@ export async function getSession(
   const config = MODEL_CONFIG[modelType];
   try {
     const modelPath = findModelPath(config.fileName);
-    const session = await ort.InferenceSession.create(modelPath, {
-      executionProviders: ["webgpu", "cpu"],
-    });
+    const candidates = candidateExecutionProviders();
+
+    // Try each candidate EP ALONE, in order, so we can report which one truly
+    // initialized. Passing ["dml","cpu"] as one list would let ORT silently use
+    // CPU when DirectML fails to register — you'd never know the GPU was skipped.
+    // ORT always keeps an internal CPU fallback for individual ops a GPU EP
+    // can't run, so requesting a single GPU EP here is safe.
+    let session: ort.InferenceSession | undefined;
+    let activeEp = "";
+    let lastErr: unknown;
+    for (const ep of candidates) {
+      try {
+        session = await ort.InferenceSession.create(modelPath, {
+          executionProviders: [ep] as ort.InferenceSession.ExecutionProviderConfig[],
+        });
+        activeEp = ep;
+        break;
+      } catch (epErr) {
+        lastErr = epErr;
+        console.warn(
+          `[${config.logLabel}] EP "${ep}" failed to initialize, trying next:`,
+          epErr instanceof Error ? epErr.message : epErr,
+        );
+      }
+    }
+    if (!session) {
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error("No execution provider could be initialized");
+    }
     sessions.set(modelType, session);
 
     // Only log model info once per process for each type
     if (!initializedModels.has(modelType)) {
       console.log(`[${config.logLabel}] Model loaded from:`, modelPath);
+      console.log(
+        `[${config.logLabel}] Active execution provider: ${activeEp}` +
+          (activeEp === "cpu" ? " (CPU)" : " (GPU-accelerated)"),
+      );
       console.log(`[${config.logLabel}] Input names:`, session.inputNames);
       console.log(`[${config.logLabel}] Output names:`, session.outputNames);
       initializedModels.add(modelType);
