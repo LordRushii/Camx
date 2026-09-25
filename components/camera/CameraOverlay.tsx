@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { drawDetections, type DetectionModel } from "@/lib/draw";
+import { drawDetections, type DetectionModel, type Detection } from "@/lib/draw";
 
 interface CameraOverlayProps {
   readonly cameraId: string;
@@ -11,6 +11,14 @@ interface CameraOverlayProps {
   readonly model: DetectionModel;
   readonly width?: number;
   readonly height?: number;
+  /**
+   * Local detections from browser inference. When provided (even an empty
+   * array), these are drawn directly and the Convex fallback is skipped. When
+   * omitted, the overlay subscribes to server-pushed detections in Convex.
+   */
+  readonly detections?: readonly Detection[];
+  readonly frameWidth?: number;
+  readonly frameHeight?: number;
 }
 
 export function CameraOverlay({
@@ -19,6 +27,9 @@ export function CameraOverlay({
   model,
   width = 640,
   height = 480,
+  detections: localDetections,
+  frameWidth,
+  frameHeight,
 }: CameraOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -34,10 +45,13 @@ export function CameraOverlay({
     return () => clearInterval(interval);
   }, [isDetectActive]);
 
-  // Subscribe to detections push logs in Convex
+  const useLocal = localDetections !== undefined;
+
+  // Fallback path: subscribe to server-pushed detections in Convex only when
+  // no local (browser-inference) detections are supplied by the parent.
   const rawDetections = useQuery(
     api.detections.recentByCamera,
-    isDetectActive ? { cameraId, since } : "skip"
+    isDetectActive && !useLocal ? { cameraId, since } : "skip"
   );
 
   const latestDoc =
@@ -45,9 +59,9 @@ export function CameraOverlay({
       ? rawDetections[rawDetections.length - 1]
       : null;
 
-  const detections = latestDoc ? latestDoc.detections : [];
-  const frameW = latestDoc?.frame?.width ?? width;
-  const frameH = latestDoc?.frame?.height ?? height;
+  const detections = useLocal ? localDetections ?? [] : latestDoc ? latestDoc.detections : [];
+  const frameW = useLocal ? frameWidth ?? width : latestDoc?.frame?.width ?? width;
+  const frameH = useLocal ? frameHeight ?? height : latestDoc?.frame?.height ?? height;
 
   useEffect(() => {
     const canvas = canvasRef.current;

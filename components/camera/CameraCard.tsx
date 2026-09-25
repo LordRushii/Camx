@@ -9,6 +9,9 @@ import { useCameraDevices } from "@/hooks/useCameraDevices";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Detection } from "@/lib/draw";
 import { cocoClassName } from "@/lib/coco";
+import { getYoloSession } from "@/lib/detection/onnxSession";
+import { detectVideoFrame } from "@/lib/detection/detectFrame";
+import type { InferenceSession } from "onnxruntime-web";
 import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
 import { useMutation } from "convex/react";
@@ -47,11 +50,15 @@ export function CameraCard({
   }, [enabled]);
   const [isDetectActive, setIsDetectActive] = useState(true);
   const [isWatchActive, setIsWatchActive] = useState(false);
-  const [model, setModel] = useState<"rfdetr" | "yolo">("rfdetr");
+  const [model, setModel] = useState<"rfdetr" | "yolo">("yolo");
   const [showDebug, setShowDebug] = useState(false);
   const [detections, setDetections] = useState<readonly Detection[]>([]);
+  // Natural frame dimensions of the last sampled video frame; detections are in
+  // this coordinate space so the overlay can scale boxes back correctly.
+  const [frameDims, setFrameDims] = useState<{ readonly w: number; readonly h: number }>({ w: 640, h: 480 });
   
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const sessionRef = useRef<InferenceSession | null>(null);
   const [lastLatency, setLastLatency] = useState<number | null>(null);
   const [lastRequestId, setLastRequestId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -79,88 +86,66 @@ export function CameraCard({
 
 
 
-  // Frame capture and posting loop
+  // In-browser YOLO11n inference loop (onnxruntime-web, WebGPU with WASM fallback).
   useEffect(() => {
     if (!isActive || !isDetectActive) return;
 
-    let timeoutId: NodeJS.Timeout | null = null;
-    let abortController: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let active = true;
 
-    const captureAndPost = async () => {
+    const tick = async () => {
       const videoEl = videoRef.current;
+      // Skip until the video has real dimensions to sample.
       if (!videoEl || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
-        if (active) timeoutId = setTimeout(captureAndPost, 100);
-        return;
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = 640;
-      canvas.height = 480;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        if (active) timeoutId = setTimeout(captureAndPost, 100);
+        if (active) timeoutId = setTimeout(tick, 100);
         return;
       }
 
       try {
-        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg");
-        const blob = await fetch(dataUrl).then((r) => r.blob());
-
-        if (abortController) abortController.abort();
-        abortController = new AbortController();
+        // Lazily initialize the singleton session on first ready frame.
+        if (!sessionRef.current) {
+          sessionRef.current = await getYoloSession();
+          if (!active) return;
+        }
 
         setIsProcessing(true);
-        const formData = new FormData();
-        formData.append("frame", blob, `frame-${cameraIndex}.jpg`);
-        formData.append("cameraId", cameraId || `camera-${cameraIndex}`);
-        formData.append("model", model);
+        const { detections: dets, latencyMs } = await detectVideoFrame(
+          videoEl,
+          sessionRef.current,
+        );
 
-        const response = await fetch("http://localhost:3001/detect", {
-          method: "POST",
-          body: formData,
-          signal: abortController.signal,
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP error ${response.status}`);
-        }
-
-        const data = await response.json();
-        if (data.ok && active) {
-          setDetections(data.detections);
-          setLastLatency(data.meta?.latencyMs ?? null);
-          setLastRequestId(data.requestId ?? null);
+        if (active) {
+          setDetections(dets);
+          setFrameDims({ w: videoEl.videoWidth, h: videoEl.videoHeight });
+          setLastLatency(latencyMs);
+          setLastRequestId(`local-${cameraIndex}-${Date.now()}`);
         }
       } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") return;
-        console.warn(`[CameraCard] Detection loop error:`, err);
+        console.warn(`[CameraCard] Local inference error:`, err);
       } finally {
         if (active) {
           setIsProcessing(false);
           // Run loop at ~5 FPS
-          timeoutId = setTimeout(captureAndPost, 200);
+          timeoutId = setTimeout(tick, 200);
         }
       }
     };
 
-    captureAndPost();
+    tick();
 
     return () => {
       active = false;
       if (timeoutId) clearTimeout(timeoutId);
-      if (abortController) abortController.abort();
     };
-  }, [isActive, isDetectActive, cameraIndex, model, cameraId]);
+  }, [isActive, isDetectActive, cameraIndex]);
 
-  // Determine status color based on detections
+  // Determine status color based on detections (local inference is always YOLO)
   const hasThreat = detections.some((d) => {
-    const className = typeof d.class === "number" ? cocoClassName(d.class, model) : d.class;
+    const className = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
     return ["weapon", "knife", "handgun", "rifle"].includes(className.toLowerCase());
   });
   const hasWarning = detections.some((d) => {
-    const className = typeof d.class === "number" ? cocoClassName(d.class, model) : d.class;
+    const className = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
     return ["backpack", "cell phone"].includes(className.toLowerCase());
   });
   
@@ -237,7 +222,16 @@ export function CameraCard({
       <CardContent className="p-0 border-t border-border flex flex-col items-center bg-black relative aspect-[4/3] overflow-hidden">
         <CameraFeed isCameraActive={isActive} label={label} deviceId={selectedDeviceId} videoRef={videoRef} />
         {isActive && isDetectActive && (
-          <CameraOverlay cameraId={cameraId || `camera-${cameraIndex}`} isDetectActive={isDetectActive} model={model} width={640} height={480} />
+          <CameraOverlay
+            cameraId={cameraId || `camera-${cameraIndex}`}
+            isDetectActive={isDetectActive}
+            model="yolo"
+            width={640}
+            height={480}
+            detections={detections}
+            frameWidth={frameDims.w}
+            frameHeight={frameDims.h}
+          />
         )}
       </CardContent>
 
