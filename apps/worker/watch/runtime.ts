@@ -3,7 +3,11 @@ import ffmpegStatic from "ffmpeg-static";
 import sharp from "sharp";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../convex/_generated/api.js";
-import type { WatchProvider } from "./providers/index.js";
+import type { WatchProvider, BurstFrame } from "./providers/index.js";
+import { pushFrame, recentFrames, clearCamera } from "./frameBuffer.js";
+import { detectMotion, clearMotion } from "./motion.js";
+import { runGate, decideTrigger } from "./gate.js";
+import { VisionCallGateway } from "./rateLimiter.js";
 
 export interface CameraDoc {
   _id: string;
@@ -21,6 +25,21 @@ export interface CameraDoc {
 
 // Keep track of active watch jobs per camera to prevent concurrent executions
 const activeWatchCameraIds = new Set<string>();
+
+// Per-camera cooldown: epoch-ms until which we suppress new escalations after an
+// alert, so one event produces one alert instead of firing every loop.
+const cooldownUntil = new Map<string, number>();
+
+function cooldownMs(): number {
+  const v = Number(process.env.WATCH_COOLDOWN_MS);
+  return Number.isFinite(v) && v > 0 ? v : 60_000;
+}
+
+function burstFrameCount(): number {
+  const v = Number(process.env.WATCH_BURST_FRAMES);
+  if (!Number.isFinite(v)) return 6;
+  return Math.max(1, Math.min(10, Math.floor(v)));
+}
 
 /**
  * Spawn FFmpeg to capture a single frame from the camera's stream.
@@ -93,12 +112,17 @@ export async function generateMockFrame(text: string): Promise<Buffer> {
 }
 
 /**
- * Run a single watch/verification pipeline iteration for a camera.
+ * Run a single event-gated watch iteration for a camera.
+ *
+ * Pipeline: capture frame -> buffer + motion (free) -> local ONNX gate (free) ->
+ * only if an event is triggered and we're not cooling down or rate-limited, send
+ * a burst of recent frames to the vision model, verify, and log the threat.
  */
 async function runWatchForCamera(
   camera: CameraDoc,
   convexClient: ConvexHttpClient,
-  provider: WatchProvider
+  provider: WatchProvider,
+  gateway: VisionCallGateway
 ): Promise<void> {
   if (activeWatchCameraIds.has(camera.cameraId)) {
     return;
@@ -120,10 +144,47 @@ async function runWatchForCamera(
       frameBuffer = await generateMockFrame(`Camera: ${camera.name} [Capture Failed]`);
     }
 
-    const base64Image = frameBuffer.toString("base64");
+    // Always maintain the rolling buffer + motion baseline (free, no LLM cost).
+    pushFrame(camera.cameraId, { ts: Date.now(), buffer: frameBuffer, mimeType });
+    const motion = await detectMotion(camera.cameraId, frameBuffer);
 
-    // 1st LLM call: Analyze frame for potential harms
-    const analysisRes = await provider.analyzeFrame(base64Image, mimeType);
+    // Suppress escalation while cooling down from a recent alert.
+    const now = Date.now();
+    if ((cooldownUntil.get(camera.cameraId) ?? 0) > now) {
+      return;
+    }
+
+    // Local ONNX gate — the free trigger. Idle scenes stop here.
+    const gate = await runGate(frameBuffer);
+    const decision = decideTrigger(gate, motion);
+    if (!decision.triggered) {
+      return;
+    }
+
+    // Rate-limit / budget guard before any cloud call.
+    const denyReason = gateway.tryAcquire();
+    if (denyReason) {
+      console.warn(
+        `[WATCH RUNTIME] ${camera.cameraId} event (${decision.reasons.join(",")}) skipped: ${denyReason}`,
+      );
+      return;
+    }
+
+    console.log(
+      `[WATCH RUNTIME] Event on ${camera.cameraId} [${decision.reasons.join(",")}] (motion=${motion.score.toFixed(3)}); running burst analysis...`,
+    );
+
+    let analysisRes: { result: { isHarm: boolean | null; description: string | null }; rawText: string; modelKey: string };
+    try {
+      const burst: BurstFrame[] = recentFrames(camera.cameraId, burstFrameCount()).map((f) => ({
+        base64: f.buffer.toString("base64"),
+        mimeType: f.mimeType,
+      }));
+      analysisRes = await provider.analyzeBurst(burst, gate.summary);
+    } finally {
+      gateway.release();
+    }
+
     let isHarm = analysisRes.result.isHarm === true;
     let description = analysisRes.result.description;
     let matchesPrompt = null;
@@ -133,10 +194,12 @@ async function runWatchForCamera(
     let verificationRawText = null;
     let overturned = false;
 
-    // 2nd LLM call: Verification check if first call reported harm
+    const base64Latest = frameBuffer.toString("base64");
+
+    // 2nd LLM call: verification check if burst reported harm.
     if (isHarm && description) {
       console.log(`[WATCH RUNTIME] Harm detected on ${camera.cameraId}, running second-pass verification...`);
-      const verificationRes = await provider.verifyHarm(base64Image, mimeType, description);
+      const verificationRes = await provider.verifyHarm(base64Latest, mimeType, description);
       matchesPrompt = verificationRes.matchesPrompt;
       reason = verificationRes.reason;
       verificationLatencyMs = verificationRes.latencyMs;
@@ -153,8 +216,11 @@ async function runWatchForCamera(
       }
     }
 
-    // Call Convex action if harm was verified
+    // Call Convex action if harm was verified.
     if (isHarm && description) {
+      // Open cooldown window so this event doesn't re-fire every loop.
+      cooldownUntil.set(camera.cameraId, Date.now() + cooldownMs());
+
       const requestId = `watch-${Math.random().toString(36).substring(2, 11)}`;
       const timestamp = new Date().toISOString();
 
@@ -194,13 +260,27 @@ async function runWatchForCamera(
  * Start the background surveillance watch loop.
  */
 export function startWatchLoop(convexClient: ConvexHttpClient, provider: WatchProvider) {
+  const gateway = new VisionCallGateway();
+
   const runIteration = async () => {
     try {
       const cameras = (await convexClient.query(api.cameras.list)) as CameraDoc[];
       const enabledCameras = cameras.filter((c) => c.enabled);
 
+      // Release buffers/motion state for cameras that are no longer enabled.
+      const enabledIds = new Set(enabledCameras.map((c) => c.cameraId));
+      for (const c of cameras) {
+        if (!enabledIds.has(c.cameraId)) {
+          clearCamera(c.cameraId);
+          clearMotion(c.cameraId);
+          cooldownUntil.delete(c.cameraId);
+        }
+      }
+
       await Promise.all(
-        enabledCameras.map((camera) => runWatchForCamera(camera, convexClient, provider))
+        enabledCameras.map((camera) =>
+          runWatchForCamera(camera, convexClient, provider, gateway)
+        )
       );
     } catch (err) {
       console.error("[WATCH RUNTIME] Error in watch loop run:", err);

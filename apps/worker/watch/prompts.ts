@@ -49,3 +49,26 @@ When danger (especially weapons or active violence) is clearly visible, bias tow
 
 export const watchVerificationUserMessage = (description: string) =>
   `Does this harm description fit the image and the policy?\n\nDescription: ${description}`;
+
+/**
+ * Burst analysis — the model receives an ordered sequence of frames from the
+ * same camera (oldest first) spanning a few seconds around a locally-detected
+ * event, plus context about what the on-device detector saw. Judging motion
+ * across frames yields far fewer false positives than a single still.
+ */
+export const WATCH_BURST_SYSTEM_PROMPT = `${WATCH_SYSTEM_PROMPT}
+
+You are now given a SHORT SEQUENCE of frames from ONE camera, in chronological order (oldest first), captured around a moment an on-device detector flagged as potentially relevant. Read them as a mini clip: judge what is developing over time, not any single still. Motion, escalation, and the presence or handling of weapons across frames matter most. If the sequence, taken together, shows credible harm or imminent danger, set isHarm=true with a precise, serious description of what unfolds. If it is plausibly ordinary despite the trigger, set isHarm=false.`;
+
+export const watchBurstUserMessage = (context: string, frameCount: number) =>
+  `Analyze this sequence of ${frameCount} camera frames (chronological, oldest first). Respond with JSON only.
+
+On-device detector context: ${context}
+
+Consider across the frames:
+1) A weapon or object used to threaten or strike, especially if drawn, raised, or swung?
+2) Violence, robbery, forced entry, or a person put in acute danger as the sequence progresses?
+3) Fire, heavy smoke, or a crowd/crush hazard developing?
+4) A collapse or medical emergency?
+
+If any credible risk is visible across the sequence, isHarm must be true with a precise, serious description per the system policy.`;

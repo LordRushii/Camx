@@ -1,10 +1,12 @@
 import { LMStudioClient } from "@lmstudio/sdk";
-import type { WatchProvider } from "./types.js";
+import type { WatchProvider, BurstFrame } from "./types.js";
 import {
   WATCH_SYSTEM_PROMPT,
   WATCH_USER_MESSAGE,
   WATCH_VERIFICATION_SYSTEM_PROMPT,
   watchVerificationUserMessage,
+  WATCH_BURST_SYSTEM_PROMPT,
+  watchBurstUserMessage,
 } from "../prompts.js";
 import {
   WATCH_RESPONSE_SCHEMA,
@@ -80,6 +82,46 @@ export class LmStudioProvider implements WatchProvider {
       rawText,
       modelKey: this.watchModelKey,
     };
+  }
+
+  async analyzeBurst(
+    frames: BurstFrame[],
+    context: string
+  ): Promise<{ result: WatchResult; rawText: string; modelKey: string }> {
+    const model = await this.client.llm.model(this.watchModelKey);
+    const images = await Promise.all(
+      frames.map((f, i) => {
+        const ext = f.mimeType.split("/")[1] || "png";
+        return this.client.files.prepareImageBase64(`frame-${i}.${ext}`, f.base64);
+      })
+    );
+
+    const response = await model.respond(
+      [
+        { role: "system", content: WATCH_BURST_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: watchBurstUserMessage(context, frames.length),
+          images,
+        },
+      ],
+      {
+        maxTokens: 560,
+        temperature: 0,
+        structured: {
+          type: "json",
+          jsonSchema: WATCH_RESPONSE_SCHEMA as unknown as Record<string, unknown>,
+        },
+      }
+    );
+
+    const rawText = response?.content?.trim();
+    if (!rawText) {
+      throw new Error("LM Studio returned empty burst response");
+    }
+
+    const result = parseWatchModelJson(JSON.parse(rawText));
+    return { result, rawText, modelKey: this.watchModelKey };
   }
 
   async verifyHarm(

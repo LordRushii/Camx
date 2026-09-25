@@ -9,7 +9,7 @@ import { runOrchestrator } from "./detection/orchestrator.js";
 import { type DetectionModel } from "./detection/model.js";
 import { DetectError, toHttpStatus } from "./detection/errors.js";
 import { startWatchLoop } from "./watch/runtime.js";
-import { LmStudioProvider } from "./watch/providers/index.js";
+import { createWatchProvider } from "./watch/providers/index.js";
 import { videoAnalysisService } from "./video/application/index.js";
 import { parseProviderConfigFromFormData } from "./video/providers/runtime.js";
 import { toErrorResponse } from "./video/contracts/error-codes.js";
@@ -236,7 +236,7 @@ app.listen(port, () => {
 
   // Start watch/harm-verification surveillance loop
   try {
-    const watchProvider = new LmStudioProvider();
+    const watchProvider = createWatchProvider();
     startWatchLoop(convexClient, watchProvider);
     console.log("[WORKER] Started background watch / harm-verification pipeline loop");
   } catch (err) {
