@@ -32,9 +32,14 @@ const upload = multer({
 
 const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
 if (!convexUrl) {
-  console.error("CRITICAL ERROR: NEXT_PUBLIC_CONVEX_URL environment variable is not defined.");
+  console.error(
+    "CRITICAL ERROR: NEXT_PUBLIC_CONVEX_URL environment variable is not defined.\n" +
+      "Create a .env.local file in the project root (see .env.example), then run `npx convex dev` " +
+      "to create/link a Convex deployment and get the URL.",
+  );
+  process.exit(1);
 }
-const convexClient = new ConvexHttpClient(convexUrl || "");
+const convexClient = new ConvexHttpClient(convexUrl);
 
 function generateRequestId(): string {
   return `req-${Math.random().toString(36).substring(2, 11)}`;
