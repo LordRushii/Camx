@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -8,27 +8,29 @@ import { CameraFeed, CameraOverlay, CameraStatusBadge, CameraControls, CameraDeb
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useCameraDevices } from "@/hooks/useCameraDevices";
+import { useLiveDetection, detectionSeverity } from "@/hooks/useLiveDetection";
+import { cocoClassName } from "@/lib/coco";
+import { useAlerts } from "@/components/alerts";
 import { Button } from "@/components/ui/button";
 import { Trash2, Camera } from "lucide-react";
+
+type EventType = "nominal" | "warning" | "critical";
 
 interface LiveAlert {
   id: string;
   time: string;
   camera: string;
   message: string;
-  type: "nominal" | "warning" | "critical";
-}
-
-interface MockDetection {
-  bbox: [number, number, number, number];
-  class: string;
-  confidence: number;
+  detail: string;
+  type: EventType;
 }
 
 export default function LiveMonitorPage() {
   const cameras = useQuery(api.cameras.list);
   const deleteCamera = useMutation(api.cameras.remove);
+  const activeThreatLogs = useQuery(api.threatLogs.listActive);
   const { devices } = useCameraDevices();
+  const { pushAlert } = useAlerts();
   const [selectedCam, setSelectedCam] = useState<string | null>(null);
 
   // Synchronize selected camera selection
@@ -43,88 +45,126 @@ export default function LiveMonitorPage() {
       setTimeout(() => setSelectedCam(null), 0);
     }
   }, [cameras, selectedCam]);
-  const [alerts, setAlerts] = useState<LiveAlert[]>([
-    { id: "a1", time: "22:45:12", camera: "Camera 1", message: "Knife threat unverified", type: "warning" },
-    { id: "a2", time: "22:45:13", camera: "Camera 1", message: "VLM verification process initiated", type: "nominal" },
-    { id: "a3", time: "22:45:15", camera: "Camera 1", message: "Threat confirmed: Weapon visible", type: "critical" },
-  ]);
 
   // Feed active state
   const [isFeedActive, setIsFeedActive] = useState(true);
   const [isDetectActive, setIsDetectActive] = useState(true);
-  const [isWatchActive, setIsWatchActive] = useState(true);
-  const [model, setModel] = useState<"rfdetr" | "yolo">("rfdetr");
+  const [isWatchActive, setIsWatchActive] = useState(false);
+  const [model] = useState<"rfdetr" | "yolo">("yolo");
   const [showDebug, setShowDebug] = useState(false);
 
-  // Dynamic mock detections that drift/move over time
-  const [detections, setDetections] = useState<MockDetection[]>([]);
+  const currentCam = cameras?.find((c) => c.cameraId === selectedCam);
 
+  // Device resolution for the selected camera
+  let deviceId: string | undefined = undefined;
+  if (currentCam?.sourceType === "device" && devices.length > 0) {
+    const deviceIndex = parseInt(currentCam.sourceKey || "0", 10);
+    const dev = devices[deviceIndex] || devices[0];
+    deviceId = dev?.deviceId;
+  }
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Real in-browser YOLO inference loop — same pipeline as the Detect Grid.
+  const {
+    detections,
+    frameDims,
+    latencyMs,
+    fps,
+    error: detectError,
+  } = useLiveDetection({
+    videoRef,
+    enabled: isFeedActive && isDetectActive && deviceId !== undefined,
+  });
+
+  // Real event log, assembled from genuine sources:
+  //  1. Live detections from the local YOLO loop (this page)
+  //  2. AI-verified threat logs streamed from Convex (watch loop / VLM)
+  //  3. Real telemetry events (session init, inference errors)
+  const [alerts, setAlerts] = useState<LiveAlert[]>([]);
+
+  const appendAlert = useCallback((alert: Omit<LiveAlert, "id" | "time">) => {
+    const id = `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const time = new Date().toLocaleTimeString([], { hour12: false });
+    setAlerts((prev) => [{ ...alert, id, time }, ...prev].slice(0, 30));
+  }, []);
+
+  // Log every change in the live detection set as a real event.
+  const loggedDetectionsRef = useRef<string>("");
   useEffect(() => {
-    if (!isFeedActive || !isDetectActive) {
-      setTimeout(() => setDetections([]), 0);
+    if (!isFeedActive || !isDetectActive) return;
+    const signature = detections
+      .map((d) => {
+        const name = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
+        return `${name}:${Math.round(d.confidence * 100)}`;
+      })
+      .sort()
+      .join("|");
+
+    if (signature === loggedDetectionsRef.current) return;
+
+    if (detections.length === 0 && loggedDetectionsRef.current !== "") {
+      loggedDetectionsRef.current = "";
+      appendAlert({
+        camera: currentCam?.name ?? selectedCam ?? "Feed",
+        message: "Frame clear — no objects detected",
+        detail: "Local YOLO11n inference found no objects above the confidence threshold.",
+        type: "nominal",
+      });
       return;
     }
 
-    const interval = setInterval(() => {
-      // Randomly simulate 1 to 2 moving objects
-      const time = Date.now() * 0.001;
-      const count = Math.sin(time * 0.5) > 0 ? 2 : 1;
-      const list: MockDetection[] = [];
-
-      // Object 1: Person walking across
-      const x1 = 150 + Math.sin(time) * 100;
-      const y1 = 100 + Math.cos(time * 0.8) * 30;
-      list.push({
-        bbox: [x1, y1, x1 + 120, y1 + 250],
-        class: "person",
-        confidence: 0.85 + Math.sin(time * 2) * 0.05,
+    for (const d of detections) {
+      const name = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
+      const severity = detectionSeverity(d);
+      const conf = Math.round(d.confidence * 100);
+      appendAlert({
+        camera: currentCam?.name ?? selectedCam ?? "Feed",
+        message:
+          severity === "critical"
+            ? `THREAT: ${name} detected (${conf}% conf)`
+            : severity === "warning"
+              ? `Suspicious object: ${name} (${conf}% conf)`
+              : `Detected ${name} (${conf}% conf)`,
+        detail: `Local YOLO11n inference @ ${fps ? fps.toFixed(1) : "—"} FPS, ${latencyMs?.toFixed(0) ?? "—"}ms latency.`,
+        type: severity,
       });
-
-      // Object 2: Backpack or phone
-      if (count > 1) {
-        const x2 = 380 + Math.cos(time * 1.2) * 40;
-        const y2 = 200 + Math.sin(time * 1.5) * 30;
-        list.push({
-          bbox: [x2, y2, x2 + 80, y2 + 100],
-          class: "backpack",
-          confidence: 0.72 + Math.cos(time) * 0.07,
+      if (severity === "critical") {
+        pushAlert({
+          severity: "critical",
+          title: `${name.charAt(0).toUpperCase() + name.slice(1)} detected`,
+          detail: `Live Monitor flagged a ${name} (${conf}% confidence) on ${currentCam?.name ?? selectedCam}.`,
+          cameraId: selectedCam ?? "monitor",
+          cameraLabel: currentCam?.name ?? "Live Monitor",
+          source: "live",
         });
       }
+    }
+    loggedDetectionsRef.current = signature;
+  }, [detections, isFeedActive, isDetectActive, currentCam?.name, selectedCam, fps, latencyMs, appendAlert, pushAlert]);
 
-      setDetections(list);
-    }, 100);
-
-    return () => clearInterval(interval);
-  }, [isFeedActive, isDetectActive]);
-
-  // Append logs periodically
+  // AI-verified threats from the Convex watch loop appear as real events too.
+  const loggedThreatIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const logInterval = setInterval(() => {
-      const msgs = [
-        { msg: "Intrusion boundary warning triggered", type: "warning" as const },
-        { msg: "WebGPU frame extraction nominal", type: "nominal" as const },
-        { msg: "Model caching garbage collected", type: "nominal" as const },
-        { msg: "VLM verification: Safe/filtered outcome", type: "nominal" as const },
-      ];
-      const randomMsg = msgs[Math.floor(Math.random() * msgs.length)];
-      const now = new Date().toTimeString().split(" ")[0];
+    if (!activeThreatLogs) return;
+    for (const log of activeThreatLogs) {
+      if (loggedThreatIdsRef.current.has(log._id)) continue;
+      loggedThreatIdsRef.current.add(log._id);
+      appendAlert({
+        camera: log.cameraId,
+        message: `AI VERIFIED: ${log.classification}`,
+        detail: log.previewText,
+        type: log.severity === "critical" ? "critical" : log.severity === "warning" ? "warning" : "nominal",
+      });
+    }
+  }, [activeThreatLogs, appendAlert]);
 
-      setAlerts((prev) => [
-        {
-          id: String(Date.now()),
-          time: now,
-          camera: selectedCam === "camera-1" ? "Camera 1" : "Camera 2",
-          message: randomMsg.msg,
-          type: randomMsg.type,
-        },
-        ...prev.slice(0, 15),
-      ]);
-    }, 4500);
-
-    return () => clearInterval(logInterval);
-  }, [selectedCam]);
-
-  const activeStatus = alerts[0]?.type ?? "nominal";
+  const activeStatus: EventType = (() => {
+    const worst = alerts[0]?.type ?? "nominal";
+    if (detections.some((d) => detectionSeverity(d) === "critical")) return "critical";
+    if (detections.some((d) => detectionSeverity(d) === "warning")) return "warning";
+    return worst;
+  })();
 
   return (
     <div className="p-8 space-y-6">
@@ -132,7 +172,7 @@ export default function LiveMonitorPage() {
         <div>
           <h2 className="text-xl font-bold tracking-tight">Live Monitor Desk</h2>
           <p className="text-sm text-muted-foreground">
-            Consolidated operator panel with active canvas overlays, alarm badges, and VLM telemetry logs.
+            Consolidated operator panel with active canvas overlays, alarm badges, and live inference telemetry.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -178,16 +218,16 @@ export default function LiveMonitorPage() {
                 {/* Delete selected camera button */}
                 {selectedCam && selectedCam !== "loading" && selectedCam !== "none" && (
                   (() => {
-                    const currentCam = cameras?.find((c) => c.cameraId === selectedCam);
-                    if (!currentCam) return null;
+                    const cam = cameras?.find((c) => c.cameraId === selectedCam);
+                    if (!cam) return null;
                     return (
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={async () => {
-                          if (confirm(`Are you sure you want to delete camera "${currentCam.name}"?`)) {
+                          if (confirm(`Are you sure you want to delete camera "${cam.name}"?`)) {
                             try {
-                              await deleteCamera({ id: currentCam._id });
+                              await deleteCamera({ id: cam._id });
                               setSelectedCam(null); // Clear selection so useEffect auto-selects next one
                             } catch (err) {
                               console.error("Failed to delete camera:", err);
@@ -206,30 +246,30 @@ export default function LiveMonitorPage() {
             </CardHeader>
             <CardContent className="p-0 border-t border-border flex flex-col items-center bg-black relative">
               {selectedCam ? (
-                (() => {
-                  const currentCam = cameras?.find((c) => c.cameraId === selectedCam);
-                  const sourceType = currentCam?.sourceType;
-                  const sourceKey = currentCam?.sourceKey;
+                <div className="w-full max-w-[640px] aspect-[4/3] relative overflow-hidden my-6 border border-border/20 rounded-md">
+                  {/* Camera Feed component */}
+                  <CameraFeed isCameraActive={isFeedActive} label={currentCam?.name || "Live Entrance Feed"} deviceId={deviceId} videoRef={videoRef} />
 
-                  let deviceId: string | undefined = undefined;
-                  if (sourceType === "device" && devices && devices.length > 0) {
-                    const deviceIndex = parseInt(sourceKey || "0", 10);
-                    const dev = devices[deviceIndex] || devices[0];
-                    deviceId = dev?.deviceId;
-                  }
+                  {/* Canvas Overlay for real detections */}
+                  {isFeedActive && isDetectActive && (
+                    <CameraOverlay
+                      cameraId={selectedCam}
+                      isDetectActive={isDetectActive}
+                      model={model}
+                      width={640}
+                      height={480}
+                      detections={detections}
+                      frameWidth={frameDims.w}
+                      frameHeight={frameDims.h}
+                    />
+                  )}
 
-                  return (
-                    <div className="w-full max-w-[640px] aspect-[4/3] relative overflow-hidden my-6 border border-border/20 rounded-md">
-                      {/* Camera Feed component */}
-                      <CameraFeed isCameraActive={isFeedActive} label={currentCam?.name || "Live Entrance Feed"} deviceId={deviceId} />
-
-                      {/* Canvas Overlay for detections */}
-                      {isFeedActive && isDetectActive && (
-                        <CameraOverlay cameraId={selectedCam} isDetectActive={isDetectActive} model={model} width={640} height={480} />
-                      )}
+                  {detectError && (
+                    <div className="absolute top-2 left-2 right-2 z-10 rounded bg-status-critical/90 px-2 py-1 text-[10px] font-semibold text-white shadow">
+                      Detection error: {detectError}
                     </div>
-                  );
-                })()
+                  )}
+                </div>
               ) : (
                 <div className="flex flex-col items-center justify-center aspect-[4/3] w-full max-w-[640px] my-6 border border-dashed border-border/40 rounded-md bg-muted/5 p-6 text-center">
                   <Camera className="w-8 h-8 text-muted-foreground/50 mb-3" />
@@ -250,23 +290,29 @@ export default function LiveMonitorPage() {
                 onToggleCamera={() => setIsFeedActive(!isFeedActive)}
                 onToggleDetect={() => setIsDetectActive(!isDetectActive)}
                 onToggleWatch={() => setIsWatchActive(!isWatchActive)}
-                onToggleModel={() => setModel((m) => (m === "rfdetr" ? "yolo" : "rfdetr"))}
+                onToggleModel={() => undefined}
                 onToggleDebug={() => setShowDebug(!showDebug)}
               />
 
-              {showDebug && isFeedActive && (
-                <div className="w-full">
-                  <CameraDebugPanel
-                    latency={45}
-                    requestId="req-monitor-889"
-                    isProcessing={false}
-                    watchResult={
-                      isWatchActive
-                        ? { isHarm: activeStatus === "critical", description: alerts[0]?.message ?? "No active threats." }
-                        : null
-                    }
-                  />
-                </div>
+              {showDebug && (
+                <CameraDebugPanel
+                  latency={latencyMs}
+                  requestId={deviceId ? `local-${selectedCam}` : null}
+                  isProcessing={false}
+                  watchResult={
+                    isWatchActive
+                      ? {
+                          isHarm: activeStatus === "critical" ? true : activeStatus === "warning" ? false : null,
+                          description:
+                            activeStatus === "critical"
+                              ? "Local YOLO flagged a threat-class object in the current frame."
+                              : activeStatus === "warning"
+                                ? "Local YOLO flagged a suspicious object in the current frame."
+                                : "Nominal surveillance state. No verified threats.",
+                        }
+                      : null
+                  }
+                />
               )}
             </CardFooter>
           </Card>
@@ -274,52 +320,68 @@ export default function LiveMonitorPage() {
 
         {/* Right 1 col: Intelligence log */}
         <div className="space-y-4">
-          {/* Active object list */}
+          {/* Active object list — real detections */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold">Active Detections</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {detections.length === 0 ? (
+              {(!isFeedActive || !isDetectActive || detections.length === 0) ? (
                 <p className="text-xs text-muted-foreground">No active objects in frame.</p>
               ) : (
-                detections.map((d, index) => (
-                  <div key={index} className="flex justify-between items-center text-xs p-2 rounded bg-muted/20 border border-border/30">
-                    <span className="font-semibold capitalize text-foreground">{d.class}</span>
-                    <span className="font-mono text-muted-foreground">{(d.confidence * 100).toFixed(0)}% conf</span>
-                  </div>
-                ))
+                detections.map((d, index) => {
+                  const name = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
+                  return (
+                    <div key={index} className="flex justify-between items-center text-xs p-2 rounded bg-muted/20 border border-border/30">
+                      <span className="font-semibold capitalize text-foreground">{name}</span>
+                      <span className="font-mono text-muted-foreground">{(d.confidence * 100).toFixed(0)}% conf</span>
+                    </div>
+                  );
+                })
+              )}
+              {isFeedActive && isDetectActive && latencyMs !== null && (
+                <div className="flex justify-between items-center text-[10px] p-2 rounded bg-muted/10 border border-border/20 text-muted-foreground">
+                  <span className="font-mono">YOLO11n · WebGPU</span>
+                  <span className="font-mono">{latencyMs.toFixed(0)}ms · {fps ? `${fps.toFixed(1)} FPS` : "—"}</span>
+                </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Scrolling log */}
+          {/* Scrolling log — real events */}
           <Card className="h-[400px] flex flex-col">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold">Intel Stream Log</CardTitle>
-              <CardDescription className="text-xxs">Real-time telemetry event warnings.</CardDescription>
+              <CardDescription className="text-xxs">Live detections, AI verifications, and telemetry.</CardDescription>
             </CardHeader>
             <CardContent className="flex-1 overflow-y-auto px-4 space-y-3 pb-6">
-              {alerts.map((alert) => (
-                <div key={alert.id} className="text-xxs space-y-1 p-2 rounded-md border border-border/40 bg-muted/5">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-muted-foreground">{alert.time}</span>
-                    <Badge
-                      variant="outline"
-                      className={`text-xxs scale-90 px-1 py-0 ${
-                        alert.type === "critical"
-                          ? "bg-status-critical/10 text-status-critical border-status-critical/30"
-                          : alert.type === "warning"
-                            ? "bg-status-warning/10 text-status-warning border-status-warning/30"
-                            : "bg-status-nominal/10 text-status-nominal border-status-nominal/30"
-                      }`}
-                    >
-                      {alert.type}
-                    </Badge>
+              {alerts.length === 0 ? (
+                <p className="text-xxs text-muted-foreground py-4 text-center">
+                  No events yet. Events appear when detections change or AI threats are verified.
+                </p>
+              ) : (
+                alerts.map((alert) => (
+                  <div key={alert.id} className="text-xxs space-y-1 p-2 rounded-md border border-border/40 bg-muted/5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-muted-foreground">{alert.time}</span>
+                      <Badge
+                        variant="outline"
+                        className={`text-xxs scale-90 px-1 py-0 ${
+                          alert.type === "critical"
+                            ? "bg-status-critical/10 text-status-critical border-status-critical/30"
+                            : alert.type === "warning"
+                              ? "bg-status-warning/10 text-status-warning border-status-warning/30"
+                              : "bg-status-nominal/10 text-status-nominal border-status-nominal/30"
+                        }`}
+                      >
+                        {alert.type}
+                      </Badge>
+                    </div>
+                    <p className="font-medium text-foreground">{alert.message}</p>
+                    <p className="text-muted-foreground leading-snug">{alert.detail}</p>
                   </div>
-                  <p className="font-medium text-foreground">{alert.message}</p>
-                </div>
-              ))}
+                ))
+              )}
             </CardContent>
           </Card>
         </div>

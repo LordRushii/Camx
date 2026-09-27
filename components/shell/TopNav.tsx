@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  BellIcon,
   UserIcon,
   Settings01Icon,
   GridIcon,
@@ -13,7 +12,8 @@ import {
   ComputerIcon
 } from "@hugeicons/core-free-icons";
 import { ThemeSwitcher } from "./ThemeSwitcher";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { NotificationBell } from "@/components/alerts";
+import { buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,10 +72,7 @@ export function TopNav() {
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
           {/* Notifications */}
-          <Button variant="ghost" size="icon" className="w-8 h-8 text-muted-foreground hover:text-foreground relative cursor-pointer">
-            <HugeiconsIcon icon={BellIcon} className="w-4.5 h-4.5" />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-status-critical animate-pulse" />
-          </Button>
+          <NotificationBell />
 
           {/* Theme switcher */}
           <ThemeSwitcher />

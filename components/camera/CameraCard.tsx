@@ -17,6 +17,7 @@ import { Trash2 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
+import { useAlerts, severityFromConfidence } from "@/components/alerts";
 
 interface CameraCardProps {
   readonly cameraIndex: number;
@@ -40,6 +41,7 @@ export function CameraCard({
   enabled,
 }: CameraCardProps) {
   const deleteCamera = useMutation(api.cameras.remove);
+  const { pushAlert } = useAlerts();
   const [isActive, setIsActive] = useState(enabled ?? true);
 
   // Sync active state when database enabled field changes
@@ -62,6 +64,7 @@ export function CameraCard({
   const [lastLatency, setLastLatency] = useState<number | null>(null);
   const [lastRequestId, setLastRequestId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [detectError, setDetectError] = useState<string | null>(null);
 
   const { devices, isLoading } = useCameraDevices();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("none");
@@ -122,6 +125,11 @@ export function CameraCard({
         }
       } catch (err) {
         console.warn(`[CameraCard] Local inference error:`, err);
+        if (active) {
+          setDetectError(
+            err instanceof Error ? err.message : "Unknown inference error",
+          );
+        }
       } finally {
         if (active) {
           setIsProcessing(false);
@@ -140,14 +148,38 @@ export function CameraCard({
   }, [isActive, isDetectActive, cameraIndex]);
 
   // Determine status color based on detections (local inference is always YOLO)
-  const hasThreat = detections.some((d) => {
-    const className = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
-    return ["weapon", "knife", "handgun", "rifle"].includes(className.toLowerCase());
-  });
-  const hasWarning = detections.some((d) => {
-    const className = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
-    return ["backpack", "cell phone"].includes(className.toLowerCase());
-  });
+  const THREAT_CLASSES = ["weapon", "knife", "handgun", "rifle"];
+  const WARNING_CLASSES = ["backpack", "cell phone"];
+  const toClassName = (d: Detection): string =>
+    (typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class).toLowerCase();
+
+  const hasThreat = detections.some((d) => THREAT_CLASSES.includes(toClassName(d)));
+  const hasWarning = detections.some((d) => WARNING_CLASSES.includes(toClassName(d)));
+
+  // Push a notification whenever a threat/warning object appears in the live feed.
+  useEffect(() => {
+    if (!isActive || !isDetectActive) return;
+    for (const detection of detections) {
+      const className = toClassName(detection);
+      const isThreat = THREAT_CLASSES.includes(className);
+      const isWarning = WARNING_CLASSES.includes(className);
+      if (!isThreat && !isWarning) continue;
+      const confidence = Math.round((detection.confidence ?? 0) * 100);
+      pushAlert({
+        severity: isThreat ? "critical" : severityFromConfidence(detection.confidence ?? 0),
+        title: isThreat
+          ? `${className.charAt(0).toUpperCase() + className.slice(1)} detected`
+          : `${className.charAt(0).toUpperCase() + className.slice(1)} in frame`,
+        detail: isThreat
+          ? `Live YOLO feed flagged a ${className} (${confidence}% confidence). Treat as a potential armed threat until verified.`
+          : `Live feed detected a ${className} (${confidence}% confidence) on this camera.`,
+        cameraId: cameraId ?? `camera-${cameraIndex}`,
+        cameraLabel: label,
+        source: "live",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detections, isActive, isDetectActive]);
   
   const status = !isActive
     ? "inactive"
@@ -233,6 +265,11 @@ export function CameraCard({
             frameHeight={frameDims.h}
           />
         )}
+        {detectError && (
+          <div className="absolute top-2 left-2 right-2 z-10 rounded bg-status-critical/90 px-2 py-1 text-[10px] font-semibold text-white shadow">
+            Detection error: {detectError}
+          </div>
+        )}
       </CardContent>
 
       <CardFooter className="flex flex-col gap-3 p-4 bg-muted/10 border-t border-border">
@@ -258,6 +295,7 @@ export function CameraCard({
           onToggleDetect={() => {
             const nextDetect = !isDetectActive;
             setIsDetectActive(nextDetect);
+            setDetectError(null);
             if (!nextDetect) {
               setDetections([]);
               setLastLatency(null);

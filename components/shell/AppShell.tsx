@@ -2,6 +2,17 @@
 
 import type React from "react";
 import { TopNav } from "./TopNav";
+import { AlertProvider, AlertPanel, useAlerts } from "@/components/alerts";
+
+function AlertPanelHost({ children }: { readonly children: React.ReactNode }) {
+  const { panelOpen } = useAlerts();
+  return (
+    <div className="flex h-full w-full overflow-hidden">
+      <main className="flex-1 overflow-y-auto">{children}</main>
+      {panelOpen && <AlertPanel />}
+    </div>
+  );
+}
 
 export function AppShell({
   children,
@@ -9,11 +20,11 @@ export function AppShell({
   readonly children: React.ReactNode;
 }) {
   return (
-    <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
-      <TopNav />
-      <main className="flex-1 overflow-y-auto">
-        {children}
-      </main>
-    </div>
+    <AlertProvider>
+      <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
+        <TopNav />
+        <AlertPanelHost>{children}</AlertPanelHost>
+      </div>
+    </AlertProvider>
   );
 }
