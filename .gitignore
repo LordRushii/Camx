@@ -47,3 +47,6 @@ next-env.d.ts
 /public/models/*.onnx.tmp
 /public/models/*.onnx.bak
 
+# ORT runtime artifacts (copied via postinstall script)
+/public/ort/
+

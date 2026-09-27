@@ -50,25 +50,49 @@ function DropdownMenuContent({
   )
 }
 
+const MenuGroupContext = React.createContext(false)
+
 function DropdownMenuGroup({ ...props }: MenuPrimitive.Group.Props) {
-  return <MenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />
+  return (
+    <MenuGroupContext.Provider value={true}>
+      <MenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />
+    </MenuGroupContext.Provider>
+  )
 }
 
 function DropdownMenuLabel({
   className,
   inset,
   ...props
-}: MenuPrimitive.GroupLabel.Props & {
+}: React.ComponentProps<"div"> & {
   inset?: boolean
 }) {
+  // Menu.GroupLabel only works inside a Menu.Group context (it registers as
+  // the group's accessible label). When used standalone — e.g. as a plain
+  // section heading before a separator — render a styled div with identical
+  // classes instead, avoiding the "MenuGroupContext is missing" error.
+  const isInsideGroup = React.useContext(MenuGroupContext)
+  const classes = cn(
+    "px-3 py-2.5 text-xs text-muted-foreground data-inset:pl-9.5",
+    className
+  )
+
+  if (!isInsideGroup) {
+    return (
+      <div
+        data-slot="dropdown-menu-label"
+        data-inset={inset}
+        className={classes}
+        {...props}
+      />
+    )
+  }
+
   return (
     <MenuPrimitive.GroupLabel
       data-slot="dropdown-menu-label"
       data-inset={inset}
-      className={cn(
-        "px-3 py-2.5 text-xs text-muted-foreground data-inset:pl-9.5",
-        className
-      )}
+      className={classes}
       {...props}
     />
   )

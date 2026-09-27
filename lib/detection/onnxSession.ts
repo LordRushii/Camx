@@ -1,10 +1,11 @@
 import { type InferenceSession } from "onnxruntime-web";
 
-// Keep in sync with the installed onnxruntime-web version (package.json).
-// The matching .wasm/.mjs artifacts are served from the jsDelivr CDN so we
-// don't have to copy them into /public or configure webpack asset handling.
-const ORT_VERSION = "1.30.0";
-const WASM_CDN = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+// The matching .wasm/.mjs artifacts are copied into public/ort by
+// scripts/copy-ort-artifacts.js (runs on postinstall) and served by Next from
+// /ort/. Serving locally removes a runtime dependency on the jsDelivr CDN —
+// if that fetch fails, ORT throws inside its wasm module and the inference
+// loop in CameraCard silently swallows the error, leaving the overlay blank.
+const WASM_BASE = "/ort/";
 
 // Served by Next from public/models/yolo11n.onnx.
 const MODEL_URL = "/models/yolo11n.onnx";
@@ -33,7 +34,7 @@ export function getYoloSession(): Promise<InferenceSession> {
 async function createSession(): Promise<InferenceSession> {
   // Dynamic import keeps onnxruntime-web out of the SSR/server bundle.
   const ort = await import("onnxruntime-web");
-  ort.env.wasm.wasmPaths = WASM_CDN;
+  ort.env.wasm.wasmPaths = WASM_BASE;
   // When running on WebGPU, ORT deliberately keeps a few shape/bookkeeping ops
   // on CPU and logs a warning about it ("Some nodes were not assigned to the
   // preferred execution providers"). That is expected behavior, not an error.

@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "postinstall": "node scripts/download-models.js"
+    "postinstall": "node scripts/download-models.js && node scripts/copy-ort-artifacts.js"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
