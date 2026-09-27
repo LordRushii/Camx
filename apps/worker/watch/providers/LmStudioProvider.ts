@@ -21,7 +21,13 @@ export class LmStudioProvider implements WatchProvider {
   private watchModelKey: string;
 
   constructor(config?: { baseUrl?: string; watchModelKey?: string; apiToken?: string }) {
-    const baseUrl = config?.baseUrl || process.env.LMSTUDIO_BASE_URL || "ws://127.0.0.1:1234";
+    // Canonical var is LMSTUDIO_BASE_URL; LMSTUDIO_URL is a tolerated legacy alias
+    // (see docs/live-detection-plan/04-IMPLEMENTATION-PHASES.md, Phase 0).
+    const baseUrl =
+      config?.baseUrl ||
+      process.env.LMSTUDIO_BASE_URL ||
+      process.env.LMSTUDIO_URL ||
+      "ws://127.0.0.1:1234";
     this.watchModelKey = config?.watchModelKey || process.env.LMSTUDIO_WATCH_MODEL || "lfm-2.5-ucf-1.6b";
 
     const apiToken = config?.apiToken || process.env.LM_API_TOKEN;

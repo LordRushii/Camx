@@ -60,7 +60,7 @@ export function drawDetections(
       x2 = ctx.canvas.width - originalX1;
     }
 
-    const style = getDetectionStyle(det, i);
+    const style = getDetectionStyle(det, i, model);
 
     ctx.strokeStyle = style.strokeCss;
     ctx.lineWidth = 2;
@@ -89,7 +89,7 @@ function drawMask(
 
   const { width, height } = mask;
   const bytes = decodeMask(mask.data);
-  const style = getDetectionStyle(detection, index);
+  const style = getDetectionStyle(detection, index, "rfdetr"); // masks are rf-detr-only
   const offscreen = document.createElement("canvas");
   offscreen.width = width;
   offscreen.height = height;
@@ -166,6 +166,7 @@ function readMaskBit(
 function getDetectionStyle(
   detection: Detection,
   index: number,
+  model: DetectionModel = "rfdetr",
 ): {
   readonly fill: readonly [number, number, number];
   readonly edge: readonly [number, number, number];
@@ -174,7 +175,10 @@ function getDetectionStyle(
 } {
   // Map certain classes directly to threat/warning themes if they exist
   // Otherwise, fallback to a distinct color
-  const labelText = cocoClassName(detection.class, "rfdetr").toLowerCase(); // check defaults
+  // Use the model that actually produced these detections — using the rfdetr
+  // class list for yolo ids mislabels classes and colors the wrong boxes
+  // (Phase 2 fix from docs/live-detection-plan/04).
+  const labelText = cocoClassName(detection.class, model).toLowerCase();
   const isThreat = ["weapon", "knife", "handgun", "rifle"].includes(labelText);
   const isWarning = ["backpack", "cell phone"].includes(labelText);
 

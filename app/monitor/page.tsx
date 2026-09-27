@@ -13,6 +13,8 @@ import { cocoClassName } from "@/lib/coco";
 import { useAlerts } from "@/components/alerts";
 import { Button } from "@/components/ui/button";
 import { Trash2, Camera } from "lucide-react";
+import { useThreatAnalyzer } from "@/hooks/useThreatAnalyzer";
+import { UsageMeter } from "@/components/monitor/UsageMeter";
 
 type EventType = "nominal" | "warning" | "critical";
 
@@ -75,6 +77,14 @@ export default function LiveMonitorPage() {
   } = useLiveDetection({
     videoRef,
     enabled: isFeedActive && isDetectActive && deviceId !== undefined,
+  });
+
+  // Live LLM analysis pipeline (gate → /api/analyze) with budget telemetry.
+  const analyzer = useThreatAnalyzer({
+    videoRef,
+    enabled: isFeedActive && deviceId !== undefined,
+    cameraId: selectedCam ?? "monitor",
+    detections,
   });
 
   // Real event log, assembled from genuine sources:
@@ -320,6 +330,15 @@ export default function LiveMonitorPage() {
 
         {/* Right 1 col: Intelligence log */}
         <div className="space-y-4">
+          {/* Live budget meter (Phase 4) */}
+          <UsageMeter
+            budget={analyzer.budget}
+            provider={analyzer.provider}
+            phase={analyzer.phase}
+            degraded={analyzer.degraded}
+            lastGateReasons={analyzer.lastGateReasons}
+          />
+
           {/* Active object list — real detections */}
           <Card>
             <CardHeader className="pb-3">

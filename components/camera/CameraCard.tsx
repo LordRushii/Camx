@@ -18,6 +18,8 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import { useAlerts, severityFromConfidence } from "@/components/alerts";
+import { useThreatAnalyzer } from "@/hooks/useThreatAnalyzer";
+import { Badge } from "@/components/ui/badge";
 
 interface CameraCardProps {
   readonly cameraIndex: number;
@@ -60,6 +62,15 @@ export function CameraCard({
   const [frameDims, setFrameDims] = useState<{ readonly w: number; readonly h: number }>({ w: 640, h: 480 });
   
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // LLM threat-analysis pipeline (gate → /api/analyze). Runs only while the
+  // camera is active; the LLM decides threats, this only spends calls wisely.
+  const analyzer = useThreatAnalyzer({
+    videoRef,
+    enabled: isActive,
+    cameraId: cameraId ?? `camera-${cameraIndex}`,
+    detections,
+  });
   const sessionRef = useRef<InferenceSession | null>(null);
   const [lastLatency, setLastLatency] = useState<number | null>(null);
   const [lastRequestId, setLastRequestId] = useState<string | null>(null);
@@ -87,6 +98,23 @@ export function CameraCard({
     }
   }, [devices, cameraIndex, selectedDeviceId, sourceType, sourceKey]);
 
+  // Push an operator alert when the LLM pipeline confirms a threat.
+  const lastVerdictKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const v = analyzer.lastVerdict;
+    if (!v || !v.is_threat) return;
+    const key = `${analyzer.phase}:${v.threat_type}:${v.description}`;
+    if (lastVerdictKeyRef.current === key) return;
+    lastVerdictKeyRef.current = key;
+    pushAlert({
+      severity: v.confidence >= 0.9 ? "critical" : v.confidence >= 0.75 ? "warning" : "nominal",
+      title: `AI threat: ${v.threat_type}`,
+      detail: v.description,
+      cameraId: cameraId ?? `camera-${cameraIndex}`,
+      cameraLabel: label,
+      source: "live",
+    });
+  }, [analyzer.lastVerdict, analyzer.phase, cameraId, cameraIndex, label, pushAlert]);
 
 
   // In-browser YOLO11n inference loop (onnxruntime-web, WebGPU with WASM fallback).
@@ -200,6 +228,21 @@ export function CameraCard({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {analyzer.phase === "backoff" && (
+              <Badge variant="outline" className="text-xxs px-1 py-0 bg-status-warning/10 text-status-warning border-status-warning/30">
+                budget backoff
+              </Badge>
+            )}
+            {analyzer.phase === "analyzing" && (
+              <Badge variant="outline" className="text-xxs px-1 py-0 bg-status-nominal/10 text-status-nominal border-status-nominal/30">
+                analyzing…
+              </Badge>
+            )}
+            {analyzer.phase === "threat" && (
+              <Badge variant="outline" className="text-xxs px-1 py-0 bg-status-critical/10 text-status-critical border-status-critical/30">
+                AI THREAT
+              </Badge>
+            )}
             <CameraStatusBadge status={status} />
             {dbId && (
               <Button
