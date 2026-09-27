@@ -39,6 +39,9 @@ next-env.d.ts
 
 *.md
 !README.md
+# live-detection plan docs are tracked despite the *.md ignore above
+!docs/live-detection-plan/*.md
+!docs/live-detection-plan/**/*.md
 .AGENTS
 .claude
 
