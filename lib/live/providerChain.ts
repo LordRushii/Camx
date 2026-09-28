@@ -42,8 +42,11 @@ const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
-const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
-const DEFAULT_GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+// Flash-Lite, not full Flash: on the free tier full Flash (gemini-3.8-flash)
+// allows only ~20 requests/DAY, while Flash-Lite gives ~500 RPD — the demo
+// needs ~8 calls/min for 1h+ (480+/day), so Lite is the only viable free pick.
+const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
+const DEFAULT_GROQ_MODEL = "qwen/qwen3.8-27b";
 const DEFAULT_NVIDIA_MODEL = "meta/llama-3.2-90b-vision-instruct";
 const DEFAULT_LMSTUDIO_MODEL = "lfm-2.5-ucf-1.6b";
 
@@ -178,7 +181,9 @@ async function geminiGenerate(
         temperature: 0,
         maxOutputTokens,
         responseMimeType: "application/json",
-        thinkingConfig: { thinkingBudget: 0 },
+        // Gemini 3.x rejects thinkingBudget:0 (HTTP 400); "low" is the minimal
+        // valid setting and keeps per-frame latency down.
+        thinkingConfig: { thinkingLevel: "low" },
       },
     }),
   });
