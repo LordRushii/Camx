@@ -68,10 +68,12 @@ interface UseThreatAnalyzerOptions {
 }
 
 // Client-side config (NEXT_PUBLIC-independent; these are tuning knobs, not
-// secrets — read at module load, browser-safe via clientEnvFloat).
-const KEYFRAME_WINDOW_MS = clientEnvFloat("WATCH_KEYFRAME_WINDOW_MS", 2500);
-const DOWNSCALE_PX = clientEnvFloat("WATCH_DOWNSCALE_PX", 768);
-const JPEG_QUALITY = Math.max(0, Math.min(1, clientEnvFloat("WATCH_JPEG_QUALITY", 50) / 100));
+// secrets). NOTE: WATCH_* are not NEXT_PUBLIC_, so process.env is undefined in
+// the browser and clientEnvFloat always returns the fallback here — these
+// constants are the effective values. Tune accuracy/latency by editing them.
+const KEYFRAME_WINDOW_MS = clientEnvFloat("WATCH_KEYFRAME_WINDOW_MS", 1200);
+const DOWNSCALE_PX = clientEnvFloat("WATCH_DOWNSCALE_PX", 896);
+const JPEG_QUALITY = Math.max(0, Math.min(1, clientEnvFloat("WATCH_JPEG_QUALITY", 65) / 100));
 // Gate work canvas runs at dispatch resolution so the sent JPEG is a true
 // downscale of the natural frame (03 §4.1), never an upscaled thumbnail.
 const GATE_WORK_PX = DOWNSCALE_PX;
@@ -297,6 +299,12 @@ export function useThreatAnalyzer({
           gs.cooldownUntil = now + (yoloAvailable
             ? GATE_DEFAULTS.COOLDOWN_MS
             : DEGRADED_COOLDOWN_MS);
+          // If the chosen keyframe had no confident person, this went out via
+          // the no-person sweep path; stamp it so the next person-less send
+          // waits a full sweep interval (budget guard against YOLO-miss floods).
+          if (best.personConf < GATE_DEFAULTS.PERSON_MIN_CONF) {
+            gs.lastNoPersonSentAt = now;
+          }
           await dispatch(best);
         }
       } catch (err) {

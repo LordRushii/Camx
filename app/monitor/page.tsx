@@ -8,9 +8,8 @@ import { CameraFeed, CameraOverlay, CameraStatusBadge, CameraControls, CameraDeb
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useCameraDevices } from "@/hooks/useCameraDevices";
-import { useLiveDetection, detectionSeverity } from "@/hooks/useLiveDetection";
+import { useLiveDetection } from "@/hooks/useLiveDetection";
 import { cocoClassName } from "@/lib/coco";
-import { useAlerts } from "@/components/alerts";
 import { Button } from "@/components/ui/button";
 import { Trash2, Camera } from "lucide-react";
 import { useThreatAnalyzer } from "@/hooks/useThreatAnalyzer";
@@ -32,7 +31,6 @@ export default function LiveMonitorPage() {
   const deleteCamera = useMutation(api.cameras.remove);
   const activeThreatLogs = useQuery(api.threatLogs.listActive);
   const { devices } = useCameraDevices();
-  const { pushAlert } = useAlerts();
   const [selectedCam, setSelectedCam] = useState<string | null>(null);
 
   // Synchronize selected camera selection
@@ -126,32 +124,18 @@ export default function LiveMonitorPage() {
 
     for (const d of detections) {
       const name = typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class;
-      const severity = detectionSeverity(d);
       const conf = Math.round(d.confidence * 100);
+      // Local YOLO is informational only (high-recall gate). Threats are raised
+      // exclusively by the AI-verified Convex stream below, never local COCO.
       appendAlert({
         camera: currentCam?.name ?? selectedCam ?? "Feed",
-        message:
-          severity === "critical"
-            ? `THREAT: ${name} detected (${conf}% conf)`
-            : severity === "warning"
-              ? `Suspicious object: ${name} (${conf}% conf)`
-              : `Detected ${name} (${conf}% conf)`,
+        message: `Detected ${name} (${conf}% conf)`,
         detail: `Local YOLO11n inference @ ${fps ? fps.toFixed(1) : "—"} FPS, ${latencyMs?.toFixed(0) ?? "—"}ms latency.`,
-        type: severity,
+        type: "nominal",
       });
-      if (severity === "critical") {
-        pushAlert({
-          severity: "critical",
-          title: `${name.charAt(0).toUpperCase() + name.slice(1)} detected`,
-          detail: `Live Monitor flagged a ${name} (${conf}% confidence) on ${currentCam?.name ?? selectedCam}.`,
-          cameraId: selectedCam ?? "monitor",
-          cameraLabel: currentCam?.name ?? "Live Monitor",
-          source: "live",
-        });
-      }
     }
     loggedDetectionsRef.current = signature;
-  }, [detections, isFeedActive, isDetectActive, currentCam?.name, selectedCam, fps, latencyMs, appendAlert, pushAlert]);
+  }, [detections, isFeedActive, isDetectActive, currentCam?.name, selectedCam, fps, latencyMs, appendAlert]);
 
   // AI-verified threats from the Convex watch loop appear as real events too.
   const loggedThreatIdsRef = useRef<Set<string>>(new Set());
@@ -169,11 +153,14 @@ export default function LiveMonitorPage() {
     }
   }, [activeThreatLogs, appendAlert]);
 
+  // Overall desk status: the LLM verdict is the source of truth for threats;
+  // local YOLO never escalates. Falls back to the worst recent alert (which
+  // includes AI-verified Convex threats).
   const activeStatus: EventType = (() => {
-    const worst = alerts[0]?.type ?? "nominal";
-    if (detections.some((d) => detectionSeverity(d) === "critical")) return "critical";
-    if (detections.some((d) => detectionSeverity(d) === "warning")) return "warning";
-    return worst;
+    if (analyzer.phase === "threat" || analyzer.lastVerdict?.is_threat) return "critical";
+    if (alerts.some((a) => a.type === "critical")) return "critical";
+    if (alerts.some((a) => a.type === "warning")) return "warning";
+    return "nominal";
   })();
 
   return (

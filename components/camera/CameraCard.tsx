@@ -8,7 +8,6 @@ import { CameraDebugPanel } from "./CameraDebugPanel";
 import { useCameraDevices } from "@/hooks/useCameraDevices";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Detection } from "@/lib/draw";
-import { cocoClassName } from "@/lib/coco";
 import { getYoloSession } from "@/lib/detection/onnxSession";
 import { detectVideoFrame } from "@/lib/detection/detectFrame";
 import type { InferenceSession } from "onnxruntime-web";
@@ -17,7 +16,7 @@ import { Trash2 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
-import { useAlerts, severityFromConfidence } from "@/components/alerts";
+import { useAlerts } from "@/components/alerts";
 import { useThreatAnalyzer } from "@/hooks/useThreatAnalyzer";
 import { Badge } from "@/components/ui/badge";
 
@@ -175,47 +174,15 @@ export function CameraCard({
     };
   }, [isActive, isDetectActive, cameraIndex]);
 
-  // Determine status color based on detections (local inference is always YOLO)
-  const THREAT_CLASSES = ["weapon", "knife", "handgun", "rifle"];
-  const WARNING_CLASSES = ["backpack", "cell phone"];
-  const toClassName = (d: Detection): string =>
-    (typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class).toLowerCase();
-
-  const hasThreat = detections.some((d) => THREAT_CLASSES.includes(toClassName(d)));
-  const hasWarning = detections.some((d) => WARNING_CLASSES.includes(toClassName(d)));
-
-  // Push a notification whenever a threat/warning object appears in the live feed.
-  useEffect(() => {
-    if (!isActive || !isDetectActive) return;
-    for (const detection of detections) {
-      const className = toClassName(detection);
-      const isThreat = THREAT_CLASSES.includes(className);
-      const isWarning = WARNING_CLASSES.includes(className);
-      if (!isThreat && !isWarning) continue;
-      const confidence = Math.round((detection.confidence ?? 0) * 100);
-      pushAlert({
-        severity: isThreat ? "critical" : severityFromConfidence(detection.confidence ?? 0),
-        title: isThreat
-          ? `${className.charAt(0).toUpperCase() + className.slice(1)} detected`
-          : `${className.charAt(0).toUpperCase() + className.slice(1)} in frame`,
-        detail: isThreat
-          ? `Live YOLO feed flagged a ${className} (${confidence}% confidence). Treat as a potential armed threat until verified.`
-          : `Live feed detected a ${className} (${confidence}% confidence) on this camera.`,
-        cameraId: cameraId ?? `camera-${cameraIndex}`,
-        cameraLabel: label,
-        source: "live",
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detections, isActive, isDetectActive]);
-  
+  // Threats are declared only by the cloud vision LLM (analyzer), never by
+  // local COCO YOLO — its knife class is unreliable and there is no firearm
+  // class. Local detections drive the gate + object list, not alerts; the
+  // AI-verified Convex stream (AlertProvider) raises global alerts.
   const status = !isActive
     ? "inactive"
-    : hasThreat
+    : analyzer.phase === "threat" || analyzer.lastVerdict?.is_threat
       ? "critical"
-      : hasWarning
-        ? "warning"
-        : "nominal";
+      : "nominal";
 
   return (
     <Card className="overflow-hidden border border-border shadow bg-card text-card-foreground">

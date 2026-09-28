@@ -15,6 +15,7 @@ function state(partial: Partial<CameraGateState> = {}): CameraGateState {
     lastSentHash: null,
     lastMotionAt: 0,
     cooldownUntil: 0,
+    lastNoPersonSentAt: 0,
     ...partial,
   };
 }
@@ -77,5 +78,29 @@ describe("evaluateGate", () => {
   it("respects per-camera config thresholds", () => {
     const r = evaluateGate({ ...base, motionScore: 0.03 }, state(), { motionThreshold: 0.05 });
     expect(r.send).toBe(false);
+  });
+
+  it("sweeps a person-less moving scene when the sweep interval has elapsed", () => {
+    // No person, but motion + novel, and the last no-person send was long ago.
+    const s = state({ lastNoPersonSentAt: 0 });
+    const r = evaluateGate(
+      { ...base, personConf: 0.1, now: 100_000 },
+      s,
+      { noPersonSweepMs: 60_000 },
+    );
+    expect(r.send).toBe(true);
+    expect(r.personFallback).toBe(true);
+    expect(r.reasons).toContain("no-person-sweep");
+  });
+
+  it("suppresses the no-person sweep before the interval elapses", () => {
+    const s = state({ lastNoPersonSentAt: 100_000 });
+    const r = evaluateGate(
+      { ...base, personConf: 0.1, now: 130_000 }, // only 30s since last sweep
+      s,
+      { noPersonSweepMs: 60_000 },
+    );
+    expect(r.send).toBe(false);
+    expect(r.personFallback).toBe(false);
   });
 });

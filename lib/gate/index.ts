@@ -24,10 +24,16 @@ export interface CameraGateState {
   lastMotionAt: number;
   /** Epoch ms until which dispatches are suppressed. */
   cooldownUntil: number;
+  /**
+   * Epoch ms of the last frame dispatched WITHOUT a confident person detection
+   * (the "no-person sweep" — catches YOLO false-negatives). Throttled hard so a
+   * person-less moving scene can't drain the free-tier budget.
+   */
+  lastNoPersonSentAt: number;
 }
 
 export function newCameraGateState(): CameraGateState {
-  return { prevThumb: null, lastSentHash: null, lastMotionAt: 0, cooldownUntil: 0 };
+  return { prevThumb: null, lastSentHash: null, lastMotionAt: 0, cooldownUntil: 0, lastNoPersonSentAt: 0 };
 }
 
 export interface GateInputs {
@@ -48,6 +54,8 @@ export interface GateOptions {
   sameSceneMax?: number;
   cooldownMs?: number;
   noveltyOverride?: number;
+  /** Min gap between person-less "sweep" dispatches (catches YOLO misses). */
+  noPersonSweepMs?: number;
 }
 
 export interface GateDecision {
@@ -58,15 +66,22 @@ export interface GateDecision {
   readonly cooldownActive: boolean;
   /** Cooldown was bypassed by a big scene change (§3.3 novelty override). */
   readonly cooldownOverride: boolean;
+  /** Sent despite no confident person — a YOLO-miss sweep, not a normal send. */
+  readonly personFallback: boolean;
 }
 
 export const GATE_DEFAULTS = {
   MOTION_THRESHOLD: MOTION_THRESHOLD_DEFAULT, // 0.04
-  PERSON_MIN_CONF: 0.35,
+  PERSON_MIN_CONF: 0.3, // high-recall floor; browser uses this (env only applies server-side)
   MOTION_HOLD_MS: 1500,
   SAME_SCENE_MAX: 10,
   COOLDOWN_MS: 20_000,
   NOVELTY_OVERRIDE: 25,
+  // No-person sweep: local YOLO occasionally misses a real person (occlusion,
+  // odd angle, small-in-frame). When a scene is moving + novel but shows no
+  // person, still send ONE frame at most this often so the LLM can catch the
+  // miss — long enough that a person-less moving scene barely touches budget.
+  NO_PERSON_SWEEP_MS: 60_000,
 };
 
 /**
@@ -82,6 +97,7 @@ function resolveOptions(opts: GateOptions): Required<GateOptions> {
     sameSceneMax: opts.sameSceneMax ?? envInt("WATCH_PHASH_HAMMING", GATE_DEFAULTS.SAME_SCENE_MAX),
     cooldownMs: opts.cooldownMs ?? envInt("WATCH_COOLDOWN_MS", GATE_DEFAULTS.COOLDOWN_MS),
     noveltyOverride: opts.noveltyOverride ?? envInt("WATCH_NOVELTY_OVERRIDE", GATE_DEFAULTS.NOVELTY_OVERRIDE),
+    noPersonSweepMs: opts.noPersonSweepMs ?? envInt("WATCH_NO_PERSON_SWEEP_MS", GATE_DEFAULTS.NO_PERSON_SWEEP_MS),
   };
 }
 
@@ -123,9 +139,19 @@ export function evaluateGate(
   if (person) reasons.push("person");
   if (novel) reasons.push("novel");
 
-  const send = moving && person && novel && (!cooldownActive || cooldownOverride);
+  // Primary path — the strict high-recall gate: motion + person + novelty.
+  const primary = moving && person && novel && (!cooldownActive || cooldownOverride);
 
-  return { send, reasons, novel, cooldownActive, cooldownOverride };
+  // Fallback path — no confident person, but a moving, novel scene. YOLO misses
+  // people sometimes, so sweep one frame to the LLM at most once per
+  // noPersonSweepMs (and never during cooldown) to catch the miss cheaply.
+  const sweepDue = inputs.now - state.lastNoPersonSentAt >= cfg.noPersonSweepMs;
+  const personFallback = !person && moving && novel && sweepDue && !cooldownActive;
+  if (personFallback) reasons.push("no-person-sweep");
+
+  const send = primary || personFallback;
+
+  return { send, reasons, novel, cooldownActive, cooldownOverride, personFallback };
 }
 
 /** Stage-1 helper used by the hook: updates the motion baseline and hold timer. */

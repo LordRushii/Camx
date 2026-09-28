@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Detection } from "@/lib/draw";
-import { cocoClassName } from "@/lib/coco";
 import { getYoloSession } from "@/lib/detection/onnxSession";
 import { detectVideoFrame } from "@/lib/detection/detectFrame";
 import type { InferenceSession } from "onnxruntime-web";
@@ -30,15 +29,10 @@ interface UseLiveDetectionOptions {
   readonly intervalMs?: number;
 }
 
-const THREAT_CLASSES = ["weapon", "knife", "handgun", "rifle"];
-const WARNING_CLASSES = ["backpack", "cell phone"];
-
-export function detectionSeverity(d: Detection): "critical" | "warning" | "nominal" {
-  const className = (typeof d.class === "number" ? cocoClassName(d.class, "yolo") : d.class).toLowerCase();
-  if (THREAT_CLASSES.includes(className)) return "critical";
-  if (WARNING_CLASSES.includes(className)) return "warning";
-  return "nominal";
-}
+// NOTE: local COCO YOLO11n is a high-recall GATE, not a threat detector. Its
+// "knife" class is unreliable and there is no firearm class, so it never
+// declares threats. The cloud vision LLM (/api/analyze → Convex threatLogs) is
+// the sole source of truth for threats; local detections are informational.
 
 /**
  * Runs the in-browser YOLO11n inference loop against a video element and
