@@ -71,7 +71,7 @@ interface UseThreatAnalyzerOptions {
 // secrets). NOTE: WATCH_* are not NEXT_PUBLIC_, so process.env is undefined in
 // the browser and clientEnvFloat always returns the fallback here — these
 // constants are the effective values. Tune accuracy/latency by editing them.
-const KEYFRAME_WINDOW_MS = clientEnvFloat("WATCH_KEYFRAME_WINDOW_MS", 1200);
+const KEYFRAME_WINDOW_MS = clientEnvFloat("WATCH_KEYFRAME_WINDOW_MS", 800);
 const DOWNSCALE_PX = clientEnvFloat("WATCH_DOWNSCALE_PX", 896);
 const JPEG_QUALITY = Math.max(0, Math.min(1, clientEnvFloat("WATCH_JPEG_QUALITY", 65) / 100));
 // Gate work canvas runs at dispatch resolution so the sent JPEG is a true
@@ -79,6 +79,22 @@ const JPEG_QUALITY = Math.max(0, Math.min(1, clientEnvFloat("WATCH_JPEG_QUALITY"
 const GATE_WORK_PX = DOWNSCALE_PX;
 // Degraded mode (YOLO unavailable): tighter cooldown, per the architecture doc.
 const DEGRADED_COOLDOWN_MS = 10_000;
+
+// Two-speed cadence (client-side gate throttle, the dominant limiter):
+//  - NOMINAL: an active but non-threat scene sends ~1 frame / 3-4s. Combined
+//    with the ~KEYFRAME_WINDOW_MS keyframe buffer this lands in the user's
+//    3-4s target while sipping the free tier (idle scenes still send nothing).
+//  - THREAT: once the LLM's last verdict is a threat, drop to a fast burst and
+//    skip the keyframe window so confirmation frames (N-of-M vote) fly out
+//    quickly for a fast alert. The server token bucket (WATCH_RATE_PER_MIN /
+//    WATCH_RATE_BURST) is the hard ceiling that keeps the burst bounded.
+const NOMINAL_COOLDOWN_MS = 3_000;
+const THREAT_COOLDOWN_MS = 1_200;
+// Threat pursuit decays: the fast cadence lasts only this long after the most
+// recent threat verdict. Without a fresh threat inside the window we fall back
+// to nominal — so a stale threat + server 429s/errors can't pin the camera in
+// the fast loop forever (the verdict never gets a chance to flip back).
+const THREAT_PURSUIT_MS = 15_000;
 
 export function useThreatAnalyzer({
   videoRef,
@@ -106,6 +122,10 @@ export function useThreatAnalyzer({
   const inFlightRef = useRef(false);
   const detectionsRef = useRef(detections);
   detectionsRef.current = detections;
+  // Threat pursuit: epoch ms of the most recent threat verdict. The tick derives
+  // fast cadence from this with a decay (THREAT_PURSUIT_MS) so a stale threat
+  // followed by failed sends can't lock the camera into the fast loop.
+  const lastThreatAtRef = useRef(0);
 
   const dispatch = useCallback(async (candidate: KeyframeCandidate) => {
     inFlightRef.current = true;
@@ -174,6 +194,9 @@ export function useThreatAnalyzer({
       let phase: ThreatAnalyzerState["phase"] = "watching";
       const verdict = json.verdict;
       if (verdict.is_threat) {
+        // Stamp the pursuit clock so the gate keeps the fast cadence while the
+        // threat is fresh (decays via THREAT_PURSUIT_MS in the tick).
+        lastThreatAtRef.current = Date.now();
         const vote = voteRef.current.record(true, verdict.confidence, Date.now());
         if (!vote.alert) {
           // Vote not yet met: hold the verdict locally, no alert phase.
@@ -257,18 +280,30 @@ export function useThreatAnalyzer({
         const decision = evaluateGate(
           { motionScore: motion.score, personConf, hash, now },
           gs,
-          yoloAvailable
-            ? {}
-            : { personMinConf: 0, cooldownMs: DEGRADED_COOLDOWN_MS }, // degraded: motion+novelty only
+          // Degraded (YOLO down): motion+novelty only. Cooldown DURATION is set
+          // on gs.cooldownUntil below, not here — evaluateGate ignores cooldownMs.
+          yoloAvailable ? {} : { personMinConf: 0 },
         );
         setState((p) => ({ ...p, lastGateReasons: decision.reasons }));
 
-        if (!decision.send || inFlightRef.current) {
+        if (!decision.send) {
+          // Gate closed: drop any partial keyframe window so a later resume
+          // starts fresh instead of dispatching a stale buffered frame.
+          bufferRef.current = [];
+          windowStartRef.current = null;
+          timeoutId = setTimeout(tick, intervalMs);
+          return;
+        }
+        if (inFlightRef.current) {
           timeoutId = setTimeout(tick, intervalMs);
           return;
         }
 
-        // Stage 4 — keyframe window: buffer the candidate, send the best.
+        // Stage 4 — keyframe window: buffer the candidate, send the best. In
+        // threat pursuit the window collapses to 0 so a confirmation frame
+        // dispatches immediately (no buffering latency). Pursuit decays: only
+        // a threat verdict seen within THREAT_PURSUIT_MS keeps the fast cadence.
+        const threatMode = now - lastThreatAtRef.current < THREAT_PURSUIT_MS;
         bufferRef.current.push({
           motionScore: motion.score,
           personConf,
@@ -281,8 +316,9 @@ export function useThreatAnalyzer({
         });
         windowStartRef.current ??= now;
 
+        const windowMs = threatMode ? 0 : KEYFRAME_WINDOW_MS;
         const windowElapsed = now - (windowStartRef.current ?? now);
-        if (windowElapsed < KEYFRAME_WINDOW_MS) {
+        if (windowElapsed < windowMs) {
           timeoutId = setTimeout(tick, intervalMs);
           return;
         }
@@ -293,12 +329,15 @@ export function useThreatAnalyzer({
 
         if (best) {
           // Record the sent hash + open cooldown AFTER picking the keyframe.
-          // Cooldown length matches the gate config (WATCH_COOLDOWN_MS via
-          // evaluateGate defaults; degraded mode uses the tighter value).
+          // Cadence is adaptive: fast during threat pursuit, ~3-4s when nominal,
+          // and the tighter degraded value when YOLO is unavailable.
+          const cooldownMs = !yoloAvailable
+            ? DEGRADED_COOLDOWN_MS
+            : threatMode
+              ? THREAT_COOLDOWN_MS
+              : NOMINAL_COOLDOWN_MS;
           gs.lastSentHash = best.hash;
-          gs.cooldownUntil = now + (yoloAvailable
-            ? GATE_DEFAULTS.COOLDOWN_MS
-            : DEGRADED_COOLDOWN_MS);
+          gs.cooldownUntil = now + cooldownMs;
           // If the chosen keyframe had no confident person, this went out via
           // the no-person sweep path; stamp it so the next person-less send
           // waits a full sweep interval (budget guard against YOLO-miss floods).

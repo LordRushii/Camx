@@ -47,7 +47,10 @@ const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 // needs ~8 calls/min for 1h+ (480+/day), so Lite is the only viable free pick.
 const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
 const DEFAULT_GROQ_MODEL = "qwen/qwen3.8-27b";
-const DEFAULT_NVIDIA_MODEL = "meta/llama-3.2-90b-vision-instruct";
+// NVIDIA hosts both Llama-3.2 vision NIMs, but on the free integrate endpoint
+// the 90B never streams a token (connection hangs, 0 bytes) — verified live.
+// The 11B vision NIM responds fast and correctly, so it is the usable default.
+const DEFAULT_NVIDIA_MODEL = "meta/llama-3.2-11b-vision-instruct";
 const DEFAULT_LMSTUDIO_MODEL = "lfm-2.5-ucf-1.6b";
 
 // Shared watch prompts (kept in sync with apps/worker/watch/prompts.ts, plus
