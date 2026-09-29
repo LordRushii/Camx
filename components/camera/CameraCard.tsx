@@ -18,6 +18,8 @@ import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import { useAlerts } from "@/components/alerts";
 import { useThreatAnalyzer } from "@/hooks/useThreatAnalyzer";
+import { watchResultFromVerdict } from "@/lib/live/debugTelemetry";
+import { threatAlertSeverity } from "@/lib/budget/verdict";
 import { Badge } from "@/components/ui/badge";
 
 interface CameraCardProps {
@@ -72,7 +74,6 @@ export function CameraCard({
   });
   const sessionRef = useRef<InferenceSession | null>(null);
   const [lastLatency, setLastLatency] = useState<number | null>(null);
-  const [lastRequestId, setLastRequestId] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [detectError, setDetectError] = useState<string | null>(null);
 
@@ -106,7 +107,10 @@ export function CameraCard({
     if (lastVerdictKeyRef.current === key) return;
     lastVerdictKeyRef.current = key;
     pushAlert({
-      severity: v.confidence >= 0.9 ? "critical" : v.confidence >= 0.75 ? "warning" : "nominal",
+      // Never "nominal": this branch only runs for a confirmed threat, and a
+      // nominal entry is suppressed from the toast — a knife at 0.6 confidence
+      // must still reach the operator.
+      severity: threatAlertSeverity(v.confidence),
       title: `AI threat: ${v.threat_type}`,
       detail: v.description,
       cameraId: cameraId ?? `camera-${cameraIndex}`,
@@ -148,7 +152,6 @@ export function CameraCard({
           setDetections(dets);
           setFrameDims({ w: videoEl.videoWidth, h: videoEl.videoHeight });
           setLastLatency(latencyMs);
-          setLastRequestId(`local-${cameraIndex}-${Date.now()}`);
         }
       } catch (err) {
         console.warn(`[CameraCard] Local inference error:`, err);
@@ -280,6 +283,14 @@ export function CameraCard({
             Detection error: {detectError}
           </div>
         )}
+        {status === "critical" && analyzer.lastVerdict?.is_threat && (
+          <div className="absolute bottom-0 left-0 right-0 z-10 bg-status-critical/95 px-3 py-2 text-xs font-bold text-white shadow flex items-center gap-2">
+            <span className="animate-pulse">⚠</span>
+            <span className="truncate">
+              THREAT: {analyzer.lastVerdict.description || analyzer.lastVerdict.threat_type}
+            </span>
+          </div>
+        )}
       </CardContent>
 
       <CardFooter className="flex flex-col gap-3 p-4 bg-muted/10 border-t border-border">
@@ -297,7 +308,6 @@ export function CameraCard({
               setIsWatchActive(false);
               setDetections([]);
               setLastLatency(null);
-              setLastRequestId(null);
             } else {
               setIsDetectActive(true);
             }
@@ -309,7 +319,6 @@ export function CameraCard({
             if (!nextDetect) {
               setDetections([]);
               setLastLatency(null);
-              setLastRequestId(null);
             }
           }}
           onToggleWatch={() => setIsWatchActive(!isWatchActive)}
@@ -320,19 +329,17 @@ export function CameraCard({
         {showDebug && isActive && (
           <div className="w-full">
             <CameraDebugPanel
-              latency={lastLatency ?? 0}
-              requestId={lastRequestId ?? `req-telemetry-${cameraIndex}-8894`}
+              latency={analyzer.lastLatencyMs}
+              requestId={analyzer.lastRequestId}
+              yoloLatency={lastLatency}
               isProcessing={isProcessing}
-              watchResult={
-                isWatchActive
-                  ? {
-                      isHarm: status === "critical",
-                      description: status === "critical"
-                        ? "VLM second-pass confirmed weapon presence in frame."
-                        : "Nominal surveillance state. No verified threats."
-                    }
-                  : null
-              }
+              error={analyzer.lastError}
+              provider={analyzer.provider}
+              watchResult={watchResultFromVerdict(analyzer.lastVerdict, {
+                provider: analyzer.provider,
+                degraded: analyzer.degraded,
+                gateReasons: analyzer.lastGateReasons,
+              })}
             />
           </div>
         )}

@@ -1,17 +1,35 @@
 "use client";
 
+import type { DebugWatchResult } from "@/lib/live/debugTelemetry";
+
 interface CameraDebugPanelProps {
+  /** Round-trip ms of the last /api/analyze dispatch — the LLM call itself. */
   readonly latency: number | null;
+  /** Request id of that same dispatch, as sent to the server. */
   readonly requestId: string | null;
+  /**
+   * Local YOLO inference time. Kept as its own row on purpose: it is a
+   * different measurement from the LLM round-trip, and showing it under the
+   * "Latency" heading (as this panel used to) hid real pipeline failures behind
+   * a healthy-looking 70ms number.
+   */
+  readonly yoloLatency?: number | null;
   readonly isProcessing: boolean;
-  readonly watchResult: { readonly isHarm: boolean | null; readonly description: string } | null;
+  readonly watchResult: DebugWatchResult | null;
+  /** Last LLM/gate pipeline error, when there is one (shown instead of nothing). */
+  readonly error?: string | null;
+  /** Which provider answered the last dispatched frame. */
+  readonly provider?: string | null;
 }
 
 export function CameraDebugPanel({
   latency,
   requestId,
+  yoloLatency = null,
   isProcessing,
   watchResult,
+  error = null,
+  provider = null,
 }: CameraDebugPanelProps) {
   const isHarm = watchResult?.isHarm ?? null;
 
@@ -33,9 +51,29 @@ export function CameraDebugPanel({
         </div>
 
         <div className="p-2 rounded bg-muted/30 border border-border/40">
-          <div className="text-[10px] text-muted-foreground uppercase">Latency</div>
-          <div className="font-mono">{latency ? `${latency}ms` : "—"}</div>
+          <div className="text-[10px] text-muted-foreground uppercase">LLM latency</div>
+          <div className="font-mono">{latency === null ? "—" : `${latency}ms`}</div>
         </div>
+
+        {yoloLatency !== null && (
+          <div className="p-2 rounded bg-muted/30 border border-border/40">
+            <div className="text-[10px] text-muted-foreground uppercase">YOLO latency</div>
+            <div className="font-mono text-muted-foreground">
+              {yoloLatency === null ? "—" : `${Math.round(yoloLatency)}ms`}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <div className="p-2 rounded bg-status-critical/10 border border-status-critical/40 text-status-critical font-mono text-[10px] break-words">
+          LLM pipeline error: {error}
+        </div>
+      )}
+
+      <div className="p-2 rounded bg-muted/30 border border-border/40">
+        <div className="text-[10px] text-muted-foreground uppercase">Provider</div>
+        <div className="font-mono">{provider ?? "—"}</div>
       </div>
 
       <div className="p-3 rounded bg-muted/40 border border-border/60">
@@ -59,7 +97,7 @@ export function CameraDebugPanel({
           Raw verifier feedback
         </summary>
         <pre className="mt-2 p-2 rounded bg-black text-status-nominal font-mono text-[9px] overflow-x-auto max-h-32 whitespace-pre-wrap leading-relaxed">
-          {JSON.stringify({ requestId, latency, isProcessing, watchResult }, null, 2)}
+          {JSON.stringify({ requestId, latency, yoloLatency, isProcessing, watchResult, error, provider }, null, 2)}
         </pre>
       </details>
     </div>

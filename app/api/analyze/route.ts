@@ -8,8 +8,38 @@ import {
   classificationForType,
 } from "@/lib/budget/verdict";
 import { getConvexSiteUrl } from "@/lib/live/convexAction";
+import {
+  REQUEST_BUDGET_DEFAULTS,
+  createRequestBudget,
+  remainingMs,
+  canAfford,
+} from "@/lib/live/requestBudget";
+import { envInt } from "@/lib/shared/env";
 
 export const runtime = "nodejs"; // NOT edge: needs process.env keys + provider fetch
+
+/**
+ * Wall clock this route gives its own LLM work, provider calls included.
+ *
+ * It MUST stay comfortably under `DISPATCH_TIMEOUT_MS` in
+ * hooks/useThreatAnalyzer.ts: the browser aborts the fetch at that deadline, and
+ * an aborted fetch shows the operator "signal timed out" with no verdict and no
+ * provider — which is exactly how a held knife went unreported.
+ */
+const REQUEST_BUDGET_MS = envInt("WATCH_REQUEST_BUDGET_MS", REQUEST_BUDGET_DEFAULTS.TOTAL_MS);
+
+/**
+ * Persistence must never push the response past the browser's deadline: the
+ * Convex write gets whatever is left of the request budget, floored so a
+ * confirmed threat is still recorded (the monitor's threat log reads it back).
+ */
+function persistTimeoutMs(deadlineAt: number): number {
+  const left = remainingMs(deadlineAt, Date.now());
+  return Math.max(
+    REQUEST_BUDGET_DEFAULTS.PERSIST_MIN_MS,
+    Math.min(REQUEST_BUDGET_DEFAULTS.PERSIST_TIMEOUT_MS, left),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Request / response contract — docs/live-detection-plan/02-ARCHITECTURE.md
@@ -31,6 +61,8 @@ const analyzeRequestSchema = z.object({
       personCount: z.number().int().min(0).max(99).default(0),
     })
     .default({ personPresent: false, motionScore: 0, personCount: 0 }),
+  // Skip the negative-verdict cache (weapon-triggered / sweep frames).
+  forceFresh: z.boolean().default(false),
 });
 
 type AnalyzeRequest = z.infer<typeof analyzeRequestSchema>;
@@ -81,6 +113,10 @@ function buildContextLine(body: AnalyzeRequest): string {
 }
 
 export async function POST(request: Request) {
+  // Started first thing: the browser's stopwatch is already running, so every
+  // hop below is measured against this one deadline.
+  const budget = createRequestBudget(REQUEST_BUDGET_MS, Date.now());
+
   // 1. Validate the body. Oversized/malformed payloads never reach a provider.
   let body: AnalyzeRequest;
   try {
@@ -99,7 +135,10 @@ export async function POST(request: Request) {
   const base64 = body.frame.includes(",") ? body.frame.split(",")[1]! : body.frame;
 
   // 2. Verdict cache — unchanged scenes are free (negative verdicts only).
-  const cached = verdictCache.lookup(body.cameraId, body.phash);
+  // forceFresh frames (weapon-trigger / sweep dispatches) always run the full
+  // chain: a cached "no threat" for a visually-similar hash must never silence
+  // a still frame holding a weapon.
+  const cached = body.forceFresh ? null : verdictCache.lookup(body.cameraId, body.phash);
   if (cached) {
     return NextResponse.json({
       ok: true,
@@ -125,12 +164,15 @@ export async function POST(request: Request) {
 
   try {
     // 4. Triage: call the provider chain (rotation + fallback inside), or the
-    // LM Studio floor directly when cloud budgets are exhausted.
+    // LM Studio floor directly when cloud budgets are exhausted. The deadline
+    // bounds every attempt, so a hung provider falls through instead of eating
+    // the browser's whole patience.
     const chain = getLiveProviderChain();
     const gateContext = buildContextLine(body);
+    const callOptions = { deadlineAt: budget.deadlineAt };
     const triage = degradedToLocal
-      ? await chain.analyzeVia("lmstudio", base64, body.mimeType, gateContext)
-      : await chain.analyze(base64, body.mimeType, gateContext);
+      ? await chain.analyzeVia("lmstudio", base64, body.mimeType, gateContext, callOptions)
+      : await chain.analyze(base64, body.mimeType, gateContext, callOptions);
 
     if (!triage.verdict.is_threat) {
       // Negative verdict: cache it so identical scenes cost nothing (only in
@@ -150,8 +192,15 @@ export async function POST(request: Request) {
       });
     }
 
-    // 5. Verify-on-positive: one independent second pass before any alert.
-    const { verdict, verified, verification } = await verifyPositive(chain, base64, body.mimeType, triage.verdict);
+    // 5. Verify-on-positive: one independent second pass before any alert,
+    // budget permitting.
+    const { verdict, verified, verification } = await verifyPositive(
+      chain,
+      base64,
+      body.mimeType,
+      triage.verdict,
+      budget.deadlineAt,
+    );
 
     // 6. Confirmed threat -> Convex threatLogs.createFromWatch (dedup on requestId).
     let threatLogId: string | null = null;
@@ -166,6 +215,7 @@ export async function POST(request: Request) {
           verification,
           providerName: triage.providerName,
           rawTexts: triage.rawText ? [triage.rawText] : [],
+          timeoutMs: persistTimeoutMs(budget.deadlineAt),
         });
       } catch (err) {
         // Convex write failure must not lose the verdict to the browser.
@@ -184,10 +234,13 @@ export async function POST(request: Request) {
       threatLogId,
     });
   } catch (err) {
-    console.error("[ANALYZE] provider call failed:", err instanceof Error ? err.message : err);
-    // Fail safe: no verdict, no Convex write. The browser simply gets no alert.
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("[ANALYZE] provider call failed:", detail);
+    // Fail safe: no verdict, no Convex write. The browser gets no alert, but the
+    // real reason travels with it so the debug panel can name the culprit
+    // instead of leaving the operator with a bare "signal timed out".
     return NextResponse.json(
-      { ok: false, error: "provider-failed", budget: budgetBlock() },
+      { ok: false, error: "provider-failed", detail, budget: budgetBlock() },
       { status: 502 },
     );
   } finally {
@@ -227,6 +280,7 @@ async function verifyPositive(
   base64: string,
   mimeType: string,
   triage: Verdict,
+  deadlineAt: number,
 ): Promise<{ verdict: Verdict; verified: boolean; verification: VerificationMeta }> {
   let verification: VerificationMeta = {
     applied: false,
@@ -243,8 +297,20 @@ async function verifyPositive(
     return { verdict, verified, verification };
   }
 
+  // Optional pass: only run it when triage left enough budget for a second
+  // vision call to finish. A verify cut off mid-flight fails safe to
+  // "unverified" anyway, so skipping it costs nothing but returns the triage
+  // verdict immediately — either way the operator keeps the alert.
+  if (!canAfford(deadlineAt, Date.now(), REQUEST_BUDGET_DEFAULTS.VERIFY_MIN_MS)) {
+    return {
+      verdict,
+      verified,
+      verification: { ...verification, reason: "skipped: request budget spent on triage" },
+    };
+  }
+
   try {
-    const check = await chain.verify(base64, mimeType, triage.description);
+    const check = await chain.verify(base64, mimeType, triage.description, { deadlineAt });
     verification = {
       applied: true,
       matchesPrompt: check.matchesPrompt,
@@ -282,8 +348,9 @@ async function writeThreatLog(args: {
   };
   providerName: string;
   rawTexts: string[];
+  timeoutMs: number;
 }): Promise<string | null> {
-  const { body, base64, mimeType: _mimeType, verdict, verified, verification, providerName, rawTexts } = args;
+  const { body, base64, mimeType: _mimeType, verdict, verified, verification, providerName, rawTexts, timeoutMs } = args;
 
   // confidence is 0..100 in Convex (classifySeverity: >=90 critical).
   const confidence100 = Math.round(verdict.confidence * 100);
@@ -314,8 +381,9 @@ async function writeThreatLog(args: {
         },
       },
     }),
-    // 8s per-call deadline (05 §6): never block the browser loop.
-    signal: AbortSignal.timeout(8000),
+    // Bounded by what is left of the request budget (05 §6): never let the
+    // persistence write be the reason the browser gives up.
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {

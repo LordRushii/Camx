@@ -9,6 +9,10 @@ Cross-links: [00-README.md](00-README.md) · [01-PRD.md](01-PRD.md) · [02-ARCHI
 ## Minimum path to the 1-hour demo
 
 > The LLM is the detector, and it is already excellent (toy/real guns, fights, correct alerts). Everything we build below only decides *whether a frame is worth an LLM call*. Do **not** add local weapon detection — a prior local-ONNX weapon pre-filter failed and is explicitly out of scope. The goal is to reduce call **volume**, never detection **intelligence**.
+>
+> **Amendment (reconciling this with [03](03-FREE-TIER-BUDGET.md), which permits a local high-recall trigger).** "Out of scope" here means local weapon **classification** — letting the local model answer weapon?/threat?. It does not forbid a local model reporting that it *saw* a weapon class, because that only decides *whether to ask the LLM* (03's own rule), and giving up that signal is what left a still, held weapon unreported: a person standing still with a knife produces no motion and no perceptual-hash change, so the strict AND never opened.
+>
+> The current tree therefore treats a local weapon-class hit as a **trigger only** (`weaponFlag` in the gate, `WEAPON_CLASSES` in the hook), throttled on its own clock, always paired with a real LLM judgment. The live-crime mission supersedes the whole gate for the browser path — it moves to fixed-cadence dispatch (`lib/live/dispatchCadence.ts`) and deletes this gate — so no new gate behaviour should be built on top of it.
 
 - **Phases 0–2 are the core** that makes the demo work end-to-end. Build only these and you get: real keys wired (0) → a server proxy that holds the key and enforces a hard budget/rate cap (1) → a browser gate (motion + YOLO person-only + perceptual-hash dedup) that stops idle/duplicate frames before they ever POST (2). That combination is what keeps the demo inside free-tier limits for an hour.
 - **Phases 3–4 are polish / headroom.** Sampling refinement (3) and provider rotation + verdict cache + a live usage meter (4) widen the safety margin and make the budget visible, but the demo can survive without them if time is short.

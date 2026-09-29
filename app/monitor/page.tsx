@@ -13,6 +13,7 @@ import { cocoClassName } from "@/lib/coco";
 import { Button } from "@/components/ui/button";
 import { Trash2, Camera } from "lucide-react";
 import { useThreatAnalyzer } from "@/hooks/useThreatAnalyzer";
+import { watchResultFromVerdict } from "@/lib/live/debugTelemetry";
 import { UsageMeter } from "@/components/monitor/UsageMeter";
 
 type EventType = "nominal" | "warning" | "critical";
@@ -293,22 +294,17 @@ export default function LiveMonitorPage() {
 
               {showDebug && (
                 <CameraDebugPanel
-                  latency={latencyMs}
-                  requestId={deviceId ? `local-${selectedCam}` : null}
-                  isProcessing={false}
-                  watchResult={
-                    isWatchActive
-                      ? {
-                          isHarm: activeStatus === "critical" ? true : activeStatus === "warning" ? false : null,
-                          description:
-                            activeStatus === "critical"
-                              ? "Local YOLO flagged a threat-class object in the current frame."
-                              : activeStatus === "warning"
-                                ? "Local YOLO flagged a suspicious object in the current frame."
-                                : "Nominal surveillance state. No verified threats.",
-                        }
-                      : null
-                  }
+                  latency={analyzer.lastLatencyMs}
+                  requestId={analyzer.lastRequestId}
+                  yoloLatency={latencyMs}
+                  isProcessing={analyzer.phase === "analyzing"}
+                  error={analyzer.lastError}
+                  provider={analyzer.provider}
+                  watchResult={watchResultFromVerdict(analyzer.lastVerdict, {
+                    provider: analyzer.provider,
+                    degraded: analyzer.degraded,
+                    gateReasons: analyzer.lastGateReasons,
+                  })}
                 />
               )}
             </CardFooter>

@@ -53,3 +53,6 @@ next-env.d.ts
 # ORT runtime artifacts (copied via postinstall script)
 /public/ort/
 
+# Freebuff desktop agent state (workspace-local, machine specific)
+.freebuff/
+

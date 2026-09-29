@@ -22,6 +22,13 @@ export function envFloat(key: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
+/** Client-side integer reads: `process` is undefined in the browser bundle. */
+export function clientEnvInt(key: string, fallback: number): number {
+  if (typeof process === "undefined") return fallback;
+  const v = Number(process.env[key]);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
+}
+
 /** Client-side reads: `process` is undefined in the browser bundle. */
 export function clientEnvFloat(key: string, fallback: number): number {
   if (typeof process === "undefined") return fallback;

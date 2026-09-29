@@ -25,7 +25,7 @@ For **2 cameras**, a naive sampler pushes both streams straight at the LLM:
 | Naive @ 2 fps/camera | 4 frames/s | ~240 | ~14,400 | Same 429 wall instantly; ~1000/day gone in **~4 minutes** |
 | **Gated + 8/min cap (recommended default)** | event-driven | ≤ 8 | ≤ 480 | Never exhausts a 1-hour demo — ~48% of a single provider's daily quota, and stays under every per-minute limit |
 
-**The reframe (see [02-ARCHITECTURE.md](02-ARCHITECTURE.md)):** the LLM is the detector; the local model is only a cheap **high-recall gate** — motion **AND** person **AND** scene-changed — deciding whether a frame is even worth an LLM call. The gate turns "thousands of frames/hour" into "only the interesting frames/hour," and the budget layer caps whatever the gate lets through. A prior *local-ONNX weapon pre-filter* failed (poor weapon recall), so the local model never makes the threat verdict — it only decides *whether to ask the LLM*.
+**The reframe (see [02-ARCHITECTURE.md](02-ARCHITECTURE.md)):** the LLM is the detector; the local model is only a cheap **high-recall gate** — motion **AND** person **AND** scene-changed — deciding whether a frame is even worth an LLM call. The gate turns "thousands of frames/hour" into "only the interesting frames/hour," and the budget layer caps whatever the gate lets through. A prior *local-ONNX weapon pre-filter* failed (poor weapon recall), so the local model never makes the threat verdict — it only decides *whether to ask the LLM*. (See the amendment in [04](04-IMPLEMENTATION-PHASES.md): a local weapon-class **hit** is allowed to open the gate on that same trigger-only basis, precisely because poor recall makes it useless as a verdict but valuable as a request for one.)
 
 ---
 

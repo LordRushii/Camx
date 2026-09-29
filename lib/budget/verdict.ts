@@ -157,6 +157,22 @@ export function severityFromConfidence(
   return "nominal";
 }
 
+/**
+ * Severity to DISPLAY for a confirmed threat (`is_threat === true`).
+ *
+ * Deliberately stricter than `severityFromConfidence`, which labels the STORED
+ * severity of a threat log: that tiering bottoms out at "nominal", and the
+ * alert surface suppresses toasts for nominal entries — so a weapon the model
+ * reported at 60% confidence was filed as routine and never notified. A verdict
+ * only reaches the alert surface after the vision model flagged it (and, when
+ * the budget allowed, a second independent pass agreed), so its confidence must
+ * never be the reason the operator is not told: confidence picks between
+ * critical and warning, never between alerting and silence.
+ */
+export function threatAlertSeverity(confidence: number): "critical" | "warning" {
+  return confidence >= 0.9 ? "critical" : "warning";
+}
+
 /** Human label for a threat_type, used as the Convex `classification`. */
 export function classificationForType(type: ThreatType): string {
   const map: Record<ThreatType, string> = {

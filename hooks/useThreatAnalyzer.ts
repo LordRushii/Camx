@@ -7,20 +7,33 @@ import { pickKeyframe, type KeyframeCandidate } from "@/lib/gate/keyframe";
 import { TemporalVote } from "@/lib/gate/temporalVote";
 import { drawScaledFrame, canvasToJpeg, scaledDims } from "@/lib/gate/downscale";
 import { clientEnvFloat } from "@/lib/shared/env";
+import {
+  DISPATCH_TIMEOUT_MS,
+  describeDispatchError,
+  describeFailedStatus,
+  serverFailureDetail,
+} from "@/lib/live/dispatchError";
 import type { Detection } from "@/lib/draw";
 
 /**
  * Live threat-analysis pipeline (Layers 1–3 in the browser).
  *
- * Per tick: sample the video once at dispatch resolution → motion → (only on
- * motion) person check → novelty vs last-sent → cooldown → buffer for
- * keyframe selection → JPEG q50 → POST /api/analyze.
+ * Per tick: sample the video once at dispatch resolution → motion → person +
+ * local weapon-class flag → novelty vs last-sent → gate decision → buffer for
+ * keyframe selection (or the newest frame for a weapon trigger) → JPEG q65 →
+ * POST /api/analyze.
  *
- * The LLM is the detector; this pipeline only decides whether a frame is
- * worth a call. Every stage fails safe: errors never crash the loop. When the
- * YOLO session is unavailable (ORT/WebGPU failure), the gate degrades to
- * motion + novelty with a tighter cooldown instead of going silent (02,
- * failure modes: "fail safe, not open").
+ * The LLM is the detector; this pipeline only decides whether a frame is worth
+ * a call, and it can open for three reasons: the strict motion+person+novelty
+ * path, a local weapon-class hit, or a due static-scene sweep. The person and
+ * weapon checks therefore run BEFORE the no-motion early exit — a person holding
+ * a knife perfectly still produces neither motion nor novelty, and exiting early
+ * is exactly how such a frame never reaches the LLM.
+ *
+ * Every stage fails safe: errors never crash the loop. When the YOLO session is
+ * unavailable (ORT/WebGPU failure), the gate degrades to motion + novelty with a
+ * tighter cooldown instead of going silent (02, failure modes: "fail safe, not
+ * open").
  */
 
 export interface BudgetState {
@@ -47,6 +60,14 @@ export interface ThreatAnalyzerState {
   readonly lastError: string | null;
   /** Provider that answered the last dispatched frame ("cache" on a hit). */
   readonly provider: string | null;
+  /**
+   * Request id of the last dispatch that reached the server, and its
+   * round-trip in ms. This is the LLM call's own telemetry — the local YOLO
+   * frame id / inference time is a different number and used to be shown in
+   * its place, which made the debug panel actively misleading.
+   */
+  readonly lastRequestId: string | null;
+  readonly lastLatencyMs: number | null;
   /** True when cloud budgets are exhausted and analysis is on LM Studio local. */
   readonly degraded: boolean;
   /** Diagnostics: last gate decision reasons. */
@@ -80,6 +101,15 @@ const GATE_WORK_PX = DOWNSCALE_PX;
 // Degraded mode (YOLO unavailable): tighter cooldown, per the architecture doc.
 const DEGRADED_COOLDOWN_MS = 10_000;
 
+// Sweep intervals come from the gate's own defaults — never re-declare them
+// here, or the hook and the gate drift out of sync (the hook must stamp
+// lastStaticSweepAt exactly when a sweep frame goes out, no more often).
+const STATIC_SWEEP_MS = GATE_DEFAULTS.STATIC_SWEEP_MS;
+const WEAPON_SWEEP_MS = GATE_DEFAULTS.WEAPON_SWEEP_MS;
+// Local YOLO COCO indices that are plausible weapons. Unreliable as a verdict,
+// but a hit is a strong, free trigger to ask the vision LLM for a real judgment.
+const WEAPON_CLASSES = new Set([34, 42, 43, 76]); // baseball bat, fork, knife, scissors
+
 // Two-speed cadence (client-side gate throttle, the dominant limiter):
 //  - NOMINAL: an active but non-threat scene sends ~1 frame / 3-4s. Combined
 //    with the ~KEYFRAME_WINDOW_MS keyframe buffer this lands in the user's
@@ -109,6 +139,8 @@ export function useThreatAnalyzer({
     budget: null,
     lastError: null,
     provider: null,
+    lastRequestId: null,
+    lastLatencyMs: null,
     degraded: false,
     lastGateReasons: [],
     sentCount: 0,
@@ -127,7 +159,7 @@ export function useThreatAnalyzer({
   // followed by failed sends can't lock the camera into the fast loop.
   const lastThreatAtRef = useRef(0);
 
-  const dispatch = useCallback(async (candidate: KeyframeCandidate) => {
+  const dispatch = useCallback(async (candidate: KeyframeCandidate, forceFresh = false) => {
     inFlightRef.current = true;
     setState((p) => ({ ...p, phase: "analyzing" }));
     try {
@@ -144,23 +176,33 @@ export function useThreatAnalyzer({
       const dataUrl = canvasToJpeg(canvas, JPEG_QUALITY);
       const base64 = dataUrl.split(",")[1] ?? "";
 
+      const requestId = `live-${cameraId}-${candidate.t}`;
+      const dispatchedAt = Date.now();
+      const roundTripMs = () => Date.now() - dispatchedAt;
+
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cameraId,
-          requestId: `live-${cameraId}-${candidate.t}`,
+          requestId,
           timestamp: new Date(candidate.t).toISOString(),
           phash: candidate.hash,
           mimeType: "image/jpeg",
           frame: base64,
+          // Weapon-triggered and sweep frames must bypass the server's negative-
+          // verdict cache: a cached "no threat" for a lookalike hash is exactly
+          // how a held knife gets silenced.
+          forceFresh,
           gate: {
             personPresent: candidate.personConf >= GATE_DEFAULTS.PERSON_MIN_CONF,
             motionScore: candidate.motionScore,
             personCount: candidate.personCount ?? 0,
           },
         }),
-        signal: AbortSignal.timeout(10_000),
+        // Above the server's own budget so an abort means the SERVER is wedged,
+        // not merely slow — see lib/live/dispatchError.ts.
+        signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
       });
 
       if (res.status === 429) {
@@ -171,13 +213,24 @@ export function useThreatAnalyzer({
           budget: json.budget ?? p.budget,
           lastError: json.reason ?? "rate-limited",
           provider: null,
+          lastRequestId: requestId,
+          lastLatencyMs: roundTripMs(),
           degraded: false,
         }));
         return;
       }
 
       if (!res.ok) {
-        setState((p) => ({ ...p, phase: "watching", lastError: `analyze-failed:${res.status}` }));
+        // The route reports WHY on a 502 (which provider hung, how long it
+        // waited); show that instead of a bare status code.
+        const detail = await serverFailureDetail(res);
+        setState((p) => ({
+          ...p,
+          phase: "watching",
+          lastError: describeFailedStatus(res.status, detail),
+          lastRequestId: requestId,
+          lastLatencyMs: roundTripMs(),
+        }));
         return;
       }
 
@@ -213,6 +266,8 @@ export function useThreatAnalyzer({
         budget: json.budget,
         lastError: null,
         provider: json.provider ?? null,
+        lastRequestId: requestId,
+        lastLatencyMs: roundTripMs(),
         degraded: json.degraded ?? false,
         sentCount: json.cached ? p.sentCount : p.sentCount + 1,
       }));
@@ -220,7 +275,7 @@ export function useThreatAnalyzer({
       setState((p) => ({
         ...p,
         phase: "watching",
-        lastError: err instanceof Error ? err.message : "analyze-error",
+        lastError: describeDispatchError(err),
       }));
     } finally {
       inFlightRef.current = false;
@@ -256,29 +311,39 @@ export function useThreatAnalyzer({
         // baseline update on the same value for consistency.
         const motion = updateMotionBaseline(gs, rgba, w, h, now);
         const holdExpired = now - gs.lastMotionAt >= GATE_DEFAULTS.MOTION_HOLD_MS;
-        if (!motion.moved && holdExpired) {
-          // No motion, hold expired: cheap exit before hashing/person.
-          setState((p) => ({ ...p, phase: p.phase === "analyzing" ? p.phase : "watching" }));
-          timeoutId = setTimeout(tick, intervalMs);
-          return;
-        }
 
-        // Stage 2 — person from the existing YOLO detections (class 0 only).
-        // When the YOLO session is unavailable, detections is empty and
-        // personConf = -1: degrade to motion + novelty (fail-safe, not open)
-        // with a tighter cooldown, instead of never sending (02 failure modes).
+        // Stage 2 — person + weapon flag from the existing YOLO detections.
+        // Person = class 0. Weapon = a weapon-capable COCO class (knife, bat,
+        // blades); local COCO classes are unreliable as a VERDICT, but a hit is
+        // a cheap gate trigger that forces a frame to the LLM even when the
+        // person is perfectly still. When the YOLO session is unavailable,
+        // detections is empty: personConf = -1 and weaponFlag = false — the
+        // pipeline degrades to motion + novelty (fail-safe, not open).
         const personDetections = detectionsRef.current.filter((d) => d.class === 0);
         const personConf = personDetections.reduce(
           (max, d) => Math.max(max, d.confidence),
           -1,
         );
+        // YOLO COCO indices: 34 baseball bat, 42 fork, 43 knife, 76 scissors.
+        const weaponFlag = detectionsRef.current.some((d) => WEAPON_CLASSES.has(d.class));
         const yoloAvailable = detectionsRef.current.length > 0 || personConf >= 0;
+
+        // Cheap exit — no motion, hold expired, and NOTHING else pending. A
+        // weapon hit or a due static sweep must still reach the full gate: a
+        // person standing still holding a knife produces no motion and no
+        // novelty, so exiting here is exactly how the weapon never gets seen.
+        const stillSweepDue = now - gs.lastStaticSweepAt >= STATIC_SWEEP_MS;
+        if (!motion.moved && holdExpired && !weaponFlag && !stillSweepDue) {
+          setState((p) => ({ ...p, phase: p.phase === "analyzing" ? p.phase : "watching" }));
+          timeoutId = setTimeout(tick, intervalMs);
+          return;
+        }
 
         // Stage 3 — novelty hash (cheap; needed for dedup + cache key).
         const hash = dHashFromRgba(rgba, w, h);
 
         const decision = evaluateGate(
-          { motionScore: motion.score, personConf, hash, now },
+          { motionScore: motion.score, personConf, hash, now, weaponFlag },
           gs,
           // Degraded (YOLO down): motion+novelty only. Cooldown DURATION is set
           // on gs.cooldownUntil below, not here — evaluateGate ignores cooldownMs.
@@ -316,35 +381,51 @@ export function useThreatAnalyzer({
         });
         windowStartRef.current ??= now;
 
-        const windowMs = threatMode ? 0 : KEYFRAME_WINDOW_MS;
+        // Threat pursuit and weapon triggers skip the keyframe window: a
+        // confirmation frame must fly out immediately, not wait for buffering.
+        const windowMs = threatMode || decision.weaponTrigger ? 0 : KEYFRAME_WINDOW_MS;
         const windowElapsed = now - (windowStartRef.current ?? now);
         if (windowElapsed < windowMs) {
           timeoutId = setTimeout(tick, intervalMs);
           return;
         }
 
-        const best = pickKeyframe(bufferRef.current);
+        // Weapon trigger: send the NEWEST frame — the object as it is held up
+        // right now. The motion-max keyframe is the blurriest one, the worst
+        // possible choice for judging "is this a knife".
+        const best = decision.weaponTrigger
+          ? bufferRef.current[bufferRef.current.length - 1]!
+          : pickKeyframe(bufferRef.current);
         bufferRef.current = [];
         windowStartRef.current = null;
 
         if (best) {
           // Record the sent hash + open cooldown AFTER picking the keyframe.
-          // Cadence is adaptive: fast during threat pursuit, ~3-4s when nominal,
-          // and the tighter degraded value when YOLO is unavailable.
+          // Cadence is adaptive:
+          //  - weapon trigger: its own fast re-send clock (WEAPON_SWEEP_MS),
+          //  - static sweep: the engine's re-judge interval, stamped so the
+          //    still scene is not re-sent on every 500ms tick,
+          //  - fast during threat pursuit, ~3-4s nominal, 10s degraded.
           const cooldownMs = !yoloAvailable
             ? DEGRADED_COOLDOWN_MS
-            : threatMode
-              ? THREAT_COOLDOWN_MS
-              : NOMINAL_COOLDOWN_MS;
+            : decision.weaponTrigger
+              ? WEAPON_SWEEP_MS
+              : decision.staticSweep
+                ? STATIC_SWEEP_MS
+                : threatMode
+                  ? THREAT_COOLDOWN_MS
+                  : NOMINAL_COOLDOWN_MS;
           gs.lastSentHash = best.hash;
           gs.cooldownUntil = now + cooldownMs;
+          if (decision.weaponTrigger) gs.lastWeaponSentAt = now;
+          if (decision.staticSweep) gs.lastStaticSweepAt = now;
           // If the chosen keyframe had no confident person, this went out via
           // the no-person sweep path; stamp it so the next person-less send
           // waits a full sweep interval (budget guard against YOLO-miss floods).
           if (best.personConf < GATE_DEFAULTS.PERSON_MIN_CONF) {
             gs.lastNoPersonSentAt = now;
           }
-          await dispatch(best);
+          await dispatch(best, decision.weaponTrigger);
         }
       } catch (err) {
         console.warn("[useThreatAnalyzer] gate error:", err);

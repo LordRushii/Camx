@@ -16,6 +16,8 @@ function state(partial: Partial<CameraGateState> = {}): CameraGateState {
     lastMotionAt: 0,
     cooldownUntil: 0,
     lastNoPersonSentAt: 0,
+    lastStaticSweepAt: 0,
+    lastWeaponSentAt: 0,
     ...partial,
   };
 }
@@ -102,5 +104,77 @@ describe("evaluateGate", () => {
     );
     expect(r.send).toBe(false);
     expect(r.personFallback).toBe(false);
+  });
+
+  describe("static-scene sweep (still person holding a weapon)", () => {
+    const still = { ...base, motionScore: 0, now: 100_000 };
+
+    it("sends a still novel-looking person scene once the sweep is due", () => {
+      const s = state({ lastSentHash: base.hash, lastStaticSweepAt: 0 });
+      const r = evaluateGate(still, s, { staticSweepMs: 15_000 });
+      expect(r.send).toBe(true);
+      expect(r.staticSweep).toBe(true);
+      expect(r.reasons).toContain("static-sweep");
+    });
+
+    it("does not re-send the still scene before the sweep interval elapses", () => {
+      const s = state({ lastSentHash: base.hash, lastStaticSweepAt: 95_000 });
+      const r = evaluateGate(still, s, { staticSweepMs: 15_000 });
+      expect(r.send).toBe(false);
+      expect(r.staticSweep).toBe(false);
+    });
+
+    it("never sweeps an empty static scene (no person)", () => {
+      const s = state({ lastSentHash: base.hash, lastStaticSweepAt: 0 });
+      const r = evaluateGate({ ...still, personConf: 0.1 }, s, { staticSweepMs: 15_000 });
+      expect(r.send).toBe(false);
+    });
+  });
+
+  describe("weapon trigger (local YOLO weapon hit)", () => {
+    it("forces a send with no motion and no novelty", () => {
+      const s = state({ lastSentHash: base.hash, cooldownUntil: 200_000 });
+      const r = evaluateGate(
+        { ...base, motionScore: 0, weaponFlag: true, now: 100_000 },
+        s,
+        { weaponSweepMs: 4_000 },
+      );
+      expect(r.send).toBe(true);
+      expect(r.weaponTrigger).toBe(true);
+      expect(r.reasons).toContain("weapon-trigger");
+    });
+
+    it("is throttled by its own re-send interval while the weapon stays in frame", () => {
+      // Both clocks were hit recently: no weapon re-send and no static sweep.
+      const s = state({
+        lastSentHash: base.hash,
+        lastWeaponSentAt: 98_000,
+        lastStaticSweepAt: 98_000,
+      });
+      const r = evaluateGate(
+        { ...base, motionScore: 0, weaponFlag: true, now: 100_000 }, // 2s < 4s
+        s,
+        { weaponSweepMs: 4_000, staticSweepMs: 15_000 },
+      );
+      expect(r.send).toBe(false);
+      expect(r.weaponTrigger).toBe(false);
+    });
+
+    it("re-sends once the weapon interval elapses", () => {
+      const s = state({ lastSentHash: base.hash, lastWeaponSentAt: 95_000 });
+      const r = evaluateGate(
+        { ...base, motionScore: 0, weaponFlag: true, now: 100_000 }, // 5s >= 4s
+        s,
+        { weaponSweepMs: 4_000 },
+      );
+      expect(r.send).toBe(true);
+      expect(r.weaponTrigger).toBe(true);
+    });
+
+    it("does not fire when the local model saw no weapon", () => {
+      const r = evaluateGate({ ...base, motionScore: 0 }, state(), {});
+      expect(r.weaponTrigger).toBe(false);
+      expect(r.send).toBe(false);
+    });
   });
 });

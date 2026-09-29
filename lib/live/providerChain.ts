@@ -15,6 +15,12 @@
 import { coerceVerdictObject, cleanJsonResponse } from "../budget/verdict";
 import type { Verdict } from "../budget/verdict";
 import { envInt } from "../shared/env";
+import {
+  REQUEST_BUDGET_DEFAULTS,
+  sliceTimeoutMs,
+  describeProviderTimeout,
+  isTimeoutError,
+} from "./requestBudget";
 
 export interface LiveAnalyzeResult {
   readonly verdict: Verdict;
@@ -29,13 +35,32 @@ export interface LiveVerifyResult {
   readonly latencyMs: number;
 }
 
+/**
+ * Per-call options. `deadlineAt` is the route's request deadline (epoch ms):
+ * every provider call is bounded by what is left of it, so no hop can outlive
+ * the browser's patience. Omit it to fall back to the plain provider cap.
+ */
+export interface ChainCallOptions {
+  readonly deadlineAt?: number;
+}
+
 interface ChainEntry {
   readonly name: string;
   /** Tracked per-day budget share for proactive rotation (0 = unlimited). */
   readonly dailyBudgetShare: number;
   used: number;
-  analyze(base64: string, mimeType: string, context: string): Promise<{ verdict: Verdict; rawText: string }>;
-  verify(base64: string, mimeType: string, description: string): Promise<{ matchesPrompt: boolean; reason: string; latencyMs: number }>;
+  analyze(
+    base64: string,
+    mimeType: string,
+    context: string,
+    timeoutMs: number,
+  ): Promise<{ verdict: Verdict; rawText: string }>;
+  verify(
+    base64: string,
+    mimeType: string,
+    description: string,
+    timeoutMs: number,
+  ): Promise<{ matchesPrompt: boolean; reason: string; latencyMs: number }>;
 }
 
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -52,6 +77,10 @@ const DEFAULT_GROQ_MODEL = "qwen/qwen3.8-27b";
 // The 11B vision NIM responds fast and correctly, so it is the usable default.
 const DEFAULT_NVIDIA_MODEL = "meta/llama-3.2-11b-vision-instruct";
 const DEFAULT_LMSTUDIO_MODEL = "lfm-2.5-ucf-1.6b";
+
+// The local floor is on loopback: when LM Studio is not running, waiting the
+// full provider cap is pure latency for nothing, so it gets a tighter one.
+const LMSTUDIO_CAP_MS = envInt("WATCH_LMSTUDIO_TIMEOUT_MS", 2_500);
 
 // Shared watch prompts (kept in sync with apps/worker/watch/prompts.ts, plus
 // the live structured schema from docs/live-detection-plan/05 §4).
@@ -131,6 +160,7 @@ async function openAiChat(
   model: string,
   messages: ChatMessage[],
   maxTokens: number,
+  timeoutMs: number,
 ): Promise<string> {
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
@@ -139,6 +169,9 @@ async function openAiChat(
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify({ model, messages, temperature: 0, max_tokens: maxTokens }),
+    // Without this the chain had NO per-call bound: one hung provider consumed
+    // the browser's entire deadline and every frame died as "signal timed out".
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
     throw new Error(`LLM API error (HTTP ${response.status}): ${(await response.text()).slice(0, 300)}`);
@@ -168,6 +201,7 @@ async function geminiGenerate(
   userText: string,
   images: { base64: string; mimeType: string }[],
   maxOutputTokens: number,
+  timeoutMs: number,
 ): Promise<string> {
   const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`;
   const parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [
@@ -189,6 +223,7 @@ async function geminiGenerate(
         thinkingConfig: { thinkingLevel: "low" },
       },
     }),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
     throw new Error(`Gemini API error (HTTP ${response.status}): ${(await response.text()).slice(0, 300)}`);
@@ -226,18 +261,18 @@ function buildChain(): ChainEntry[] {
       name: "gemini",
       dailyBudgetShare: dailyBudget,
       used: 0,
-      async analyze(base64, mimeType, context) {
+      async analyze(base64, mimeType, context, timeoutMs) {
         const raw = await geminiGenerate(
           apiKey, model, SYSTEM_PROMPT, triageUserMessage(context),
-          [{ base64, mimeType }], 512,
+          [{ base64, mimeType }], 512, timeoutMs,
         );
         return { verdict: coerceVerdictObject(JSON.parse(cleanJsonResponse(raw))), rawText: raw };
       },
-      async verify(base64, mimeType, description) {
+      async verify(base64, mimeType, description, timeoutMs) {
         const start = performance.now();
         const raw = await geminiGenerate(
           apiKey, model, VERIFY_SYSTEM_PROMPT, verifyUserMessage(description),
-          [{ base64, mimeType }], 320,
+          [{ base64, mimeType }], 320, timeoutMs,
         );
         return { ...coerceVerify(raw), latencyMs: performance.now() - start };
       },
@@ -251,20 +286,20 @@ function buildChain(): ChainEntry[] {
       name: "groq",
       dailyBudgetShare: dailyBudget,
       used: 0,
-      async analyze(base64, mimeType, context) {
+      async analyze(base64, mimeType, context, timeoutMs) {
         const raw = await openAiChat(
           GROQ_BASE_URL, apiKey, model,
           [{ role: "system", content: SYSTEM_PROMPT }, visionUser(triageUserMessage(context), base64, mimeType)],
-          420,
+          420, timeoutMs,
         );
         return { verdict: coerceVerdictObject(JSON.parse(cleanJsonResponse(raw))), rawText: raw };
       },
-      async verify(base64, mimeType, description) {
+      async verify(base64, mimeType, description, timeoutMs) {
         const start = performance.now();
         const raw = await openAiChat(
           GROQ_BASE_URL, apiKey, model,
           [{ role: "system", content: VERIFY_SYSTEM_PROMPT }, visionUser(verifyUserMessage(description), base64, mimeType)],
-          280,
+          280, timeoutMs,
         );
         return { ...coerceVerify(raw), latencyMs: performance.now() - start };
       },
@@ -280,20 +315,20 @@ function buildChain(): ChainEntry[] {
       // providers (docs/live-detection-plan/03 §2/§5).
       dailyBudgetShare: Math.max(50, Math.floor(dailyBudget * 0.2)),
       used: 0,
-      async analyze(base64, mimeType, context) {
+      async analyze(base64, mimeType, context, timeoutMs) {
         const raw = await openAiChat(
           NVIDIA_BASE_URL, apiKey, model,
           [{ role: "system", content: SYSTEM_PROMPT }, visionUser(triageUserMessage(context), base64, mimeType)],
-          420,
+          420, timeoutMs,
         );
         return { verdict: coerceVerdictObject(JSON.parse(cleanJsonResponse(raw))), rawText: raw };
       },
-      async verify(base64, mimeType, description) {
+      async verify(base64, mimeType, description, timeoutMs) {
         const start = performance.now();
         const raw = await openAiChat(
           NVIDIA_BASE_URL, apiKey, model,
           [{ role: "system", content: VERIFY_SYSTEM_PROMPT }, visionUser(verifyUserMessage(description), base64, mimeType)],
-          280,
+          280, timeoutMs,
         );
         return { ...coerceVerify(raw), latencyMs: performance.now() - start };
       },
@@ -310,46 +345,91 @@ function buildChain(): ChainEntry[] {
       name: "lmstudio",
       dailyBudgetShare: 0, // unlimited local floor
       used: 0,
-      async analyze(base64, mimeType, context) {
+      async analyze(base64, mimeType, context, timeoutMs) {
         const raw = await openAiChat(
           `${baseUrl.replace(/\/$/, "")}/v1`, "", model,
           [{ role: "system", content: SYSTEM_PROMPT }, visionUser(triageUserMessage(context), base64, mimeType)],
-          420,
+          420, timeoutMs,
         );
         return { verdict: coerceVerdictObject(JSON.parse(cleanJsonResponse(raw))), rawText: raw };
       },
-      async verify(base64, mimeType, description) {
+      async verify(base64, mimeType, description, timeoutMs) {
         const start = performance.now();
         const raw = await openAiChat(
           `${baseUrl.replace(/\/$/, "")}/v1`, "", model,
           [{ role: "system", content: VERIFY_SYSTEM_PROMPT }, visionUser(verifyUserMessage(description), base64, mimeType)],
-          280,
+          280, timeoutMs,
         );
         return { ...coerceVerify(raw), latencyMs: performance.now() - start };
       },
     });
   }
 
-  return entries;
+  return orderWithHead(entries);
+}
+
+/**
+ * Order the chain with the configured head first (`WATCH_PROVIDER`, unset =
+ * built-in order), matching 02-ARCHITECTURE.md's "orders the chain as
+ * [selected, ...rest]". Rotation still advances across calls so free-tier
+ * shares stay spread; the head decides where a cycle starts. An unknown name
+ * leaves the order untouched.
+ */
+function orderWithHead(entries: ChainEntry[]): ChainEntry[] {
+  const head = (process.env.WATCH_PROVIDER || "").trim().toLowerCase();
+  if (!head) return entries;
+  const idx = entries.findIndex((e) => e.name === head);
+  if (idx <= 0) return entries;
+  return [entries[idx]!, ...entries.filter((_, i) => i !== idx)];
 }
 
 // --- Rotation + fallback wrapper ----------------------------------------------
 
 export interface LiveProviderChain {
   readonly names: readonly string[];
-  analyze(base64: string, mimeType: string, context: string): Promise<LiveAnalyzeResult>;
+  analyze(
+    base64: string,
+    mimeType: string,
+    context: string,
+    options?: ChainCallOptions,
+  ): Promise<LiveAnalyzeResult>;
   /**
    * Analyze via a SPECIFIC provider by name (no rotation/fallback). Used by
    * the route's budget-exhausted fail-safe: when cloud budgets are spent,
    * degrade to LM Studio (zero marginal cost) instead of pausing (03 §6).
    */
-  analyzeVia(providerName: string, base64: string, mimeType: string, context: string): Promise<LiveAnalyzeResult>;
-  verify(base64: string, mimeType: string, description: string): Promise<LiveVerifyResult>;
+  analyzeVia(
+    providerName: string,
+    base64: string,
+    mimeType: string,
+    context: string,
+    options?: ChainCallOptions,
+  ): Promise<LiveAnalyzeResult>;
+  verify(
+    base64: string,
+    mimeType: string,
+    description: string,
+    options?: ChainCallOptions,
+  ): Promise<LiveVerifyResult>;
 }
 
 function createChain(): LiveProviderChain {
   const chain = buildChain();
   console.log(`[LIVE CHAIN] Active provider chain: ${chain.map((c) => c.name).join(" -> ")}`);
+
+  const providerCapMs = envInt("WATCH_PROVIDER_TIMEOUT_MS", REQUEST_BUDGET_DEFAULTS.PROVIDER_CAP_MS);
+
+  /**
+   * Timeout to hand ONE attempt against `entry`, bounded by what is left of the
+   * request budget. Returns 0 when too little time remains — callers must skip
+   * that attempt, never run it with 0, which would abort instantly and burn a
+   * fallback hop for nothing.
+   */
+  const attemptTimeoutMs = (entry: ChainEntry, deadlineAt?: number): number => {
+    const cap = entry.name === "lmstudio" ? LMSTUDIO_CAP_MS : providerCapMs;
+    if (deadlineAt === undefined) return cap;
+    return sliceTimeoutMs(deadlineAt, Date.now(), cap);
+  };
 
   let rotationIndex = 0;
 
@@ -368,28 +448,49 @@ function createChain(): LiveProviderChain {
 
   const runFrom = async <T>(
     start: number,
-    op: (entry: ChainEntry) => Promise<T>,
+    deadlineAt: number | undefined,
+    op: (entry: ChainEntry, timeoutMs: number) => Promise<T>,
   ): Promise<{ result: T; entry: ChainEntry }> => {
     let lastErr: unknown;
     for (let i = 0; i < chain.length; i++) {
       const idx = (start + i) % chain.length;
       const entry = chain[idx]!;
+
+      // Per-provider hard cap: never exceed a provider's tracked share even
+      // as a fallback of last resort — LM Studio (share 0 = unlimited) is
+      // the only floor beyond this (03 §6 "500/provider").
+      if (entry.dailyBudgetShare > 0 && entry.used >= entry.dailyBudgetShare) {
+        lastErr = new Error(`"${entry.name}" hit its tracked budget share (${entry.dailyBudgetShare})`);
+        continue;
+      }
+
+      const timeoutMs = attemptTimeoutMs(entry, deadlineAt);
+      if (timeoutMs === 0) {
+        // Request budget spent: another hop could not finish before the browser
+        // aborts, so stop and surface the last real failure rather than start a
+        // call that is guaranteed to be cut off.
+        console.warn("[LIVE CHAIN] request budget spent; no further provider call started");
+        break;
+      }
+
+      const startedAt = Date.now();
       try {
-        // Per-provider hard cap: never exceed a provider's tracked share even
-        // as a fallback of last resort — LM Studio (share 0 = unlimited) is
-        // the only floor beyond this (03 §6 "500/provider").
-        if (entry.dailyBudgetShare > 0 && entry.used >= entry.dailyBudgetShare) {
-          lastErr = new Error(`"${entry.name}" hit its tracked budget share (${entry.dailyBudgetShare})`);
-          continue;
-        }
-        const result = await op(entry);
+        const result = await op(entry, timeoutMs);
         entry.used += 1;
+        console.log(`[LIVE CHAIN] ${entry.name} answered in ${Date.now() - startedAt}ms`);
         return { result, entry };
       } catch (err) {
-        lastErr = err;
+        const reason = isTimeoutError(err)
+          ? describeProviderTimeout(entry.name, timeoutMs)
+          : err instanceof Error
+            ? err.message
+            : String(err);
+        // Normalise the opaque abort so the 502 detail names the provider that
+        // hung: "signal timed out" on its own is not actionable.
+        lastErr = isTimeoutError(err) ? new Error(reason) : err;
         console.warn(
-          `[LIVE CHAIN] "${entry.name}" failed, falling back:`,
-          err instanceof Error ? err.message : err,
+          `[LIVE CHAIN] "${entry.name}" failed after ${Date.now() - startedAt}ms, falling back:`,
+          reason,
         );
       }
     }
@@ -399,24 +500,32 @@ function createChain(): LiveProviderChain {
   return {
     names: chain.map((c) => c.name),
 
-    async analyze(base64, mimeType, context) {
+    async analyze(base64, mimeType, context, options) {
       const start = pickStart();
       rotationIndex = (start + 1) % chain.length; // proactive round-robin
-      const { result, entry } = await runFrom(start, (e) => e.analyze(base64, mimeType, context));
+      const { result, entry } = await runFrom(start, options?.deadlineAt, (e, timeoutMs) =>
+        e.analyze(base64, mimeType, context, timeoutMs),
+      );
       return { verdict: result.verdict, providerName: entry.name, rawText: result.rawText };
     },
 
-    async analyzeVia(providerName, base64, mimeType, context) {
+    async analyzeVia(providerName, base64, mimeType, context, options) {
       const entry = chain.find((e) => e.name === providerName);
       if (!entry) throw new Error(`Provider "${providerName}" is not in the live chain`);
-      const result = await entry.analyze(base64, mimeType, context);
+      const timeoutMs = attemptTimeoutMs(entry, options?.deadlineAt);
+      if (timeoutMs === 0) {
+        throw new Error(`request budget spent before "${providerName}" could run`);
+      }
+      const result = await entry.analyze(base64, mimeType, context, timeoutMs);
       entry.used += 1;
       return { verdict: result.verdict, providerName: entry.name, rawText: result.rawText };
     },
 
-    async verify(base64, mimeType, description) {
+    async verify(base64, mimeType, description, options) {
       const start = pickStart();
-      const { result, entry } = await runFrom(start, (e) => e.verify(base64, mimeType, description));
+      const { result, entry } = await runFrom(start, options?.deadlineAt, (e, timeoutMs) =>
+        e.verify(base64, mimeType, description, timeoutMs),
+      );
       return {
         matchesPrompt: result.matchesPrompt,
         reason: result.reason,

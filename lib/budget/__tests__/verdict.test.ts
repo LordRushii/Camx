@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseVerdict } from "../verdict";
+import { parseVerdict, threatAlertSeverity, severityFromConfidence } from "../verdict";
 
 describe("parseVerdict", () => {
   it("parses a valid positive verdict", () => {
@@ -93,5 +93,31 @@ describe("parseVerdict", () => {
     const neg = parseVerdict('{"isHarm": false}');
     expect(neg.is_threat).toBe(false);
     expect(neg.threat_type).toBe("none");
+  });
+});
+
+describe("threatAlertSeverity", () => {
+  it("never returns the tier that the alert surface suppresses", () => {
+    // The regression this guards: a knife reported at 0.6 confidence was graded
+    // "nominal", which the toast layer drops — so the operator was never told.
+    for (const confidence of [0, 0.1, 0.5, 0.6, 0.74, 0.75, 0.89, 0.9, 1]) {
+      expect(threatAlertSeverity(confidence)).not.toBe("nominal");
+    }
+  });
+
+  it("escalates to critical at 0.9 and stays warning below it", () => {
+    expect(threatAlertSeverity(0.9)).toBe("critical");
+    expect(threatAlertSeverity(0.95)).toBe("critical");
+    expect(threatAlertSeverity(0.89)).toBe("warning");
+    expect(threatAlertSeverity(0)).toBe("warning");
+  });
+
+  it("differs from the stored-log tiering only in the lowest band", () => {
+    expect(severityFromConfidence(0.5)).toBe("nominal");
+    expect(threatAlertSeverity(0.5)).toBe("warning");
+    // Above 0.75 the two agree, so stored and displayed severities stay aligned.
+    for (const confidence of [0.75, 0.8, 0.9, 1]) {
+      expect(threatAlertSeverity(confidence)).toBe(severityFromConfidence(confidence));
+    }
   });
 });
